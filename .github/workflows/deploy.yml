@@ -1,0 +1,38 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "22.14.0"
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+  CLOUDFLARE_API_TOKEN:  ${{ secrets.CF_API_TOKEN }}
+  PUBLIC_BASE_URL:        ${{ secrets.PUBLIC_BASE_URL }}
+  KV_BLUEPRINTS_ID:      ${{ secrets.KV_BLUEPRINTS_ID }}
+  KV_AVATARS_ID:         ${{ secrets.KV_AVATARS_ID }}
+  R2_BLUEPRINT_CONTENT:  ${{ secrets.R2_BLUEPRINT_CONTENT }}
+
+jobs:
+  deploy:
+    name: Deploy to production
+    runs-on: ubuntu-latest
+    if: ${{ secrets.CF_ACCOUNT_ID != '' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - run: corepack enable
+      - run: node scripts/deploy-prod.mjs
