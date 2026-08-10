@@ -1,0 +1,28 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "gatekeeper-workers-ai-image",
+  "main": ".wrangler/validate/src/worker.ts",
+  "build": {
+    "command": "pnpm exec capnweb-validate build --out .wrangler/validate",
+    "watch_dir": "src",
+  },
+  "compatibility_date": "2026-02-02",
+  "compatibility_flags": ["allow_irrevocable_stub_storage"],
+  "rules": [{ "type": "Text", "globs": ["**/*.txt"], "fallthrough": false }],
+
+  // Workers AI binding for text-to-image inference. Unlike the backend's hardcoded binding,
+  // gatekeepers must declare their own AI binding explicitly in wrangler.jsonc.
+  "ai": { "binding": "WORKERS_AI" },
+
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ImageGatekeeper"],
+    },
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": { "invocation_logs": false },
+  },
+}
