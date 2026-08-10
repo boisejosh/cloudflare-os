@@ -1,0 +1,42 @@
+// Workers AI Image Generation — agent-facing TypeScript declarations.
+// This session is automatically available in every workspace as an ambient gatekeeper.
+// No OAuth or external credentials required — uses your account's Workers AI allocation.
+
+/** Options for generating an image. */
+export interface GenerateImageOptions {
+  /**
+   * Workers AI text-to-image model. Defaults to "@cf/black-forest-labs/flux-1-schnell".
+   * Other supported model: "@cf/stabilityai/stable-diffusion-xl-base-1.0"
+   */
+  model?: string;
+  /**
+   * Number of inference steps. Higher values improve quality at the cost of latency.
+   * Omit to use the model's default (4 for flux-1-schnell).
+   */
+  steps?: number;
+}
+
+/** A generated image. */
+export interface GeneratedImage {
+  /** Base64-encoded PNG image data. */
+  data: string;
+  /** Always "image/png". */
+  mimeType: "image/png";
+  /** The exact prompt used to generate this image. */
+  prompt: string;
+}
+
+/**
+ * Session for generating images with Workers AI.
+ *
+ * @example
+ * const img = await IMAGE_AI.generateImage("a golden retriever on a beach at sunset");
+ * // Embed in HTML: <img src={`data:image/png;base64,${img.data}`} />
+ */
+export interface ImageSession {
+  /**
+   * Generate an image from a text prompt using Workers AI.
+   * Returns the image as base64-encoded PNG data.
+   */
+  generateImage(prompt: string, options?: GenerateImageOptions): Promise<GeneratedImage>;
+}

@@ -31,6 +31,8 @@ const HANDLED_CONFIG_KEYS = new Set([
   // Browser Rendering (Gadget PDF exports). Unlike artifacts it is generally available, so it
   // passes through to customer instances as a placeholder-free binding, like the AI binding.
   "browser",
+  // Workers AI binding declared explicitly in gatekeeper wrangler.jsonc.
+  "ai",
   // gatekeeper-context's Artifacts binding is closed-beta and cannot be provisioned in arbitrary
   // user accounts; it is dropped from customer manifests (the gatekeeper degrades gracefully).
   "artifacts",
@@ -46,6 +48,7 @@ const NO_DEFAULT_CRED_INPUTS = new Set([
   "gatekeeper-scheduler",     // auto-provisioned; no third-party OAuth app
   "gatekeeper-mcp",           // MCP OAuth uses dynamic client registration, not a static app
   "gatekeeper-mcp-portal",    // same MCP OAuth chain as gatekeeper-mcp
+  "gatekeeper-workers-ai-image", // Workers AI binding; no third-party credentials
 ]);
 
 // Not installable on customer instances: Email Routing needs a zone, which workers.dev-hosted
@@ -55,7 +58,7 @@ const NOT_INSTALLABLE = new Set(["gatekeeper-email"]);
 // Ambient gatekeepers the deploy service installs on every fresh core deploy, server-side with
 // no user interaction. Members must take no inputs of any kind (enforced below): a preinstall
 // has nobody to ask.
-const PREINSTALL = new Set(["gatekeeper-context", "gatekeeper-scheduler"]);
+const PREINSTALL = new Set(["gatekeeper-context", "gatekeeper-scheduler", "gatekeeper-workers-ai-image"]);
 
 // Gatekeepers that may be installed at most once per instance; the deploy service enforces this
 // at install time. The giveaway is the account declaring an agent singleton
@@ -64,7 +67,7 @@ const PREINSTALL = new Set(["gatekeeper-context", "gatekeeper-scheduler"]);
 // ambient gatekeeper, so a second install would hand every user a duplicate ambient capsule.
 // Independent of PREINSTALL in principle; the two sets coincide today only because every ambient
 // gatekeeper we ship is also preinstalled.
-const SINGLETON = new Set(["gatekeeper-context", "gatekeeper-scheduler"]);
+const SINGLETON = new Set(["gatekeeper-context", "gatekeeper-scheduler", "gatekeeper-workers-ai-image"]);
 
 export const DEFAULT_CRED_INPUTS = [
   {
@@ -148,6 +151,10 @@ export function buildWorkerEntry({ pkgName, config, mainModule, modules, deployI
   if (config.browser) {
     // `remote` is dev-only wrangler behavior; the deployed binding is just { type, name }.
     bindings.push({ type: "browser", name: config.browser.binding });
+  }
+  if (config.ai) {
+    // AI binding declared in wrangler.jsonc (not hardcoded like the backend's WORKERS_AI).
+    bindings.push({ type: "ai", name: config.ai.binding ?? "AI" });
   }
   for (const loader of config.worker_loaders ?? []) {
     bindings.push({ type: "worker_loader", name: loader.binding });
