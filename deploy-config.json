@@ -1,0 +1,29 @@
+{
+  "publicBaseUrl": "https://os.crosby.family",
+  "kvBlueprintsId": "4626a3f6e0184d9398c6ff584109af7b",
+  "kvAvatarsId": "5b137ad4fd2f4695a6a9f8ef0e0bb15f",
+  "r2BlueprintContent": "josh-os-blueprint-content",
+  "admins": [
+    "jcrosby@cloudflare.com"
+  ],
+  "backendExtraVars": {
+    "CF_ACCESS_AUD": "83ed0f3c09992900016ba2c0e8985147e917119d8ddd826d1766ae6147b4f719",
+    "CF_ACCESS_ISS": "https://crosbyfamily.cloudflareaccess.com",
+    "CF_AI_GATEWAY": "josh-os-ai",
+    "CF_AI_GATEWAY_ACCOUNT_ID": "10277681902416e39a82b1a14b2cd3cb",
+    "CF_AI_GATEWAY_PROVIDERS": "cloudflare",
+    "DEPLOY_URL": "https://os.cloudflare.app/deploy/?instance=8631917d-e3f4-4d26-9542-be3920a131f0"
+  },
+  "gatekeeperNameOverrides": {
+    "gatekeeper-context": "josh-os-gk-context",
+    "gatekeeper-scheduler": "josh-os-gk-scheduler"
+  },
+  "authGatekeepers": "github",
+  "activeGatekeepers": "gatekeeper-context,gatekeeper-scheduler,gatekeeper-workers-ai-image,gatekeeper-github",
+  "gatekeeperSecrets": {
+    "gatekeeper-github": [
+      "CLIENT_ID",
+      "CLIENT_SECRET"
+    ]
+  }
+}
