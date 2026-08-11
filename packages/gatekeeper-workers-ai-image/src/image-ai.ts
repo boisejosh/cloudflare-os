@@ -57,11 +57,6 @@ class ImageSessionImpl extends RpcTarget implements ImageSession {
   ): Promise<GeneratedImage> {
     const model = options.model ?? DEFAULT_MODEL;
 
-    await this.#approvalQueue.authorizeObservation({
-      title: "Generate image",
-      description: `Generate image: "${prompt.slice(0, 100)}${prompt.length > 100 ? "\u2026" : ""}"`,
-    });
-
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const result = await (this.#ai as any).run(model, {
       prompt,
