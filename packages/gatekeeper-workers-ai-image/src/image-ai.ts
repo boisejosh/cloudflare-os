@@ -67,18 +67,26 @@ class ImageSessionImpl extends RpcTarget implements ImageSession {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const result = await (this.#ai as any).run(model, {
       prompt,
-      ...(options.steps !== undefined ? { steps: options.steps } : {}),
+      // flux-1-schnell uses num_steps; stable-diffusion uses steps. Pass both.
+      ...(options.steps !== undefined ? { num_steps: options.steps, steps: options.steps } : {}),
     });
 
-    // Workers AI text-to-image returns a ReadableStream<Uint8Array> (PNG).
-    const arrayBuffer = await new Response(result as ReadableStream).arrayBuffer();
-    const bytes = new Uint8Array(arrayBuffer);
-    let binary = "";
-    for (let i = 0; i < bytes.length; i++) {
-      binary += String.fromCharCode(bytes[i]);
+    // Most text-to-image models (including flux-1-schnell) return { image: string }
+    // where image is already base64-encoded PNG. Stable-diffusion returns a ReadableStream.
+    let base64: string;
+    if (result && typeof (result as any).image === "string") {
+      base64 = (result as any).image;
+    } else {
+      const arrayBuffer = await new Response(result as ReadableStream).arrayBuffer();
+      const bytes = new Uint8Array(arrayBuffer);
+      let binary = "";
+      for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      base64 = btoa(binary);
     }
 
-    return { data: btoa(binary), mimeType: "image/png", prompt };
+    return { data: base64, mimeType: "image/png", prompt };
   }
 
   [Symbol.dispose](): void {
