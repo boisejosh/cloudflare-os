@@ -42,51 +42,64 @@ const DEFAULT_MODEL = "@cf/black-forest-labs/flux-1-schnell";
 
 type AccountProps = { accountId: string };
 
-@validateRpc()
-class ImageSessionImpl extends RpcTarget implements ImageSession {
-  readonly #ai: Ai;
+interface StoredImage {
+  data: string;      // base64 PNG
+  expiresAt: number; // unix ms
+}
 
-  constructor(ai: Ai) {
-    super();
-    this.#ai = ai;
+// Shared model runner — handles both { image: string } and ReadableStream responses.
+async function runModel(ai: Ai, prompt: string, options: GenerateImageOptions): Promise<string> {
+  const model = options.model ?? DEFAULT_MODEL;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const result = await (ai as any).run(model, {
+    prompt,
+    ...(options.steps !== undefined ? { num_steps: options.steps, steps: options.steps } : {}),
+  });
+  if (result && typeof (result as { image?: unknown }).image === "string") {
+    return (result as { image: string }).image;
   }
-
-  async generateImage(
-    prompt: string,
-    options: GenerateImageOptions = {},
-  ): Promise<GeneratedImage> {
-    const model = options.model ?? DEFAULT_MODEL;
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const result = await (this.#ai as any).run(model, {
-      prompt,
-      // flux-1-schnell uses num_steps; stable-diffusion uses steps. Pass both.
-      ...(options.steps !== undefined ? { num_steps: options.steps, steps: options.steps } : {}),
-    });
-
-    // Most text-to-image models (including flux-1-schnell) return { image: string }
-    // where image is already base64-encoded PNG. Stable-diffusion returns a ReadableStream.
-    let base64: string;
-    if (result && typeof (result as any).image === "string") {
-      base64 = (result as any).image;
-    } else {
-      const arrayBuffer = await new Response(result as ReadableStream).arrayBuffer();
-      const bytes = new Uint8Array(arrayBuffer);
-      let binary = "";
-      for (let i = 0; i < bytes.length; i++) {
-        binary += String.fromCharCode(bytes[i]);
-      }
-      base64 = btoa(binary);
-    }
-
-    return { data: base64, mimeType: "image/png", prompt };
-  }
-
-
+  const buf = await new Response(result as ReadableStream).arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
 }
 
 // ---------------------------------------------------------------------------
-// Gatekeeper (Durable Object) — one facet per workspace, holds the AI binding
+// Session
+// ---------------------------------------------------------------------------
+
+@validateRpc()
+class ImageSessionImpl extends RpcTarget implements ImageSession {
+  readonly #ai: Ai;
+  readonly #storage: DurableObjectStorage;
+  readonly #doIdString: string;
+  readonly #workerUrl: string;
+
+  constructor(ai: Ai, storage: DurableObjectStorage, doIdString: string, workerUrl: string) {
+    super();
+    this.#ai = ai;
+    this.#storage = storage;
+    this.#doIdString = doIdString;
+    this.#workerUrl = workerUrl;
+  }
+
+  async generateImage(prompt: string, options: GenerateImageOptions = {}): Promise<GeneratedImage> {
+    const data = await runModel(this.#ai, prompt, options);
+    return { data, mimeType: "image/png", prompt };
+  }
+
+  async generateImageUrl(prompt: string, options: GenerateImageOptions = {}): Promise<string> {
+    const data = await runModel(this.#ai, prompt, options);
+    const imageId = crypto.randomUUID();
+    const expiresAt = Date.now() + 60 * 60 * 1000;
+    await this.#storage.put(`img:${imageId}`, { data, expiresAt } satisfies StoredImage);
+    return `${this.#workerUrl}/img/${this.#doIdString}/${imageId}`;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Gatekeeper DO
 // ---------------------------------------------------------------------------
 
 @validateRpc()
@@ -114,7 +127,27 @@ export class ImageGatekeeper
 
   async startSession(approvalQueue: NativeRpcStub<ApprovalQueue>): Promise<ImageSession> {
     approvalQueue[Symbol.dispose]?.();
-    return new ImageSessionImpl(this.env.WORKERS_AI);
+    return new ImageSessionImpl(
+      this.env.WORKERS_AI,
+      this.ctx.storage,
+      this.ctx.id.toString(),
+      this.env.IMAGE_WORKER_URL,
+    );
+  }
+
+  @skipRpcValidation()
+  async fetch(request: Request): Promise<Response> {
+    const { pathname } = new URL(request.url);
+    const imageId = pathname.split("/").pop();
+    if (!imageId) return new Response("Not found", { status: 404 });
+    const stored = await this.ctx.storage.get<StoredImage>(`img:${imageId}`);
+    if (!stored || stored.expiresAt < Date.now()) {
+      return new Response("Image not found or expired", { status: 404 });
+    }
+    const bytes = Uint8Array.from(atob(stored.data), (c) => c.charCodeAt(0));
+    return new Response(bytes, {
+      headers: { "Content-Type": "image/png", "Cache-Control": "public, max-age=3600" },
+    });
   }
 
   async getAgentCatalog(
@@ -125,17 +158,14 @@ export class ImageGatekeeper
   }
 
   async addObserver(_id: string, _user: Fetcher<GatekeeperUserVerifier>): Promise<void> {}
-
   async removeObserver(_id: string): Promise<void> {}
 
   applyAction(_action: number): Promise<void> {
     throw new Error("AI Image Generation implements no actions.");
   }
-
   rejectAction(_action: number): Promise<void> {
     throw new Error("AI Image Generation implements no actions.");
   }
-
   revertAction(
     _action: number,
   ): Promise<void | { message?: string; canRetry?: boolean; restart?: boolean }> {
@@ -144,7 +174,7 @@ export class ImageGatekeeper
 }
 
 // ---------------------------------------------------------------------------
-// Account (WorkerEntrypoint) — auto-provisioned per user, declares singleton
+// Account
 // ---------------------------------------------------------------------------
 
 @validateRpc()
@@ -156,7 +186,6 @@ export class ImageAccount
     return {
       displayName: "AI Image Generation",
       avatar: IMAGE_AI_LOGO,
-      // Declares the singleton so the Workshop folds ImageSession into every workspace.
       singleton: { tsType: "ImageSession" },
     };
   }
@@ -165,31 +194,20 @@ export class ImageAccount
     return this.ctx.exports.ImageGatekeeper({ props: this.ctx.props });
   }
 
-  async getSupportedResources(): Promise<SupportedResource[]> {
-    return [];
-  }
+  async getSupportedResources(): Promise<SupportedResource[]> { return []; }
 
   getGatekeeperClassFor(_url: string): never {
     throw new Error("AI Image Generation has no URL-addressed resources.");
   }
-
   startResourceConfigurator(_resourceUrlPattern: string): Promise<ResourceConfiguratorFrame> {
     throw new Error("AI Image Generation has no URL-addressed resources.");
   }
-
-  async ensureResources(_resourceUrlPatterns: string[]): Promise<{ url?: string }> {
-    return {};
-  }
-
+  async ensureResources(_resourceUrlPatterns: string[]): Promise<{ url?: string }> { return {}; }
   async revoke(): Promise<void> {}
-
   reconnect(): Promise<{ url: string }> {
-    throw new Error("AI Image Generation is auto-provisioned and has no connect flow.");
+    throw new Error("AI Image Generation is auto-provisioned.");
   }
-
-  async getAuthenticatedEmail(): Promise<string | null> {
-    return null;
-  }
+  async getAuthenticatedEmail(): Promise<string | null> { return null; }
 
   @skipRpcValidation()
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
@@ -198,7 +216,7 @@ export class ImageAccount
 }
 
 // ---------------------------------------------------------------------------
-// Verifier — trivial; image output is not user-specific data
+// Verifier
 // ---------------------------------------------------------------------------
 
 @validateRpc()
@@ -208,7 +226,7 @@ export class ImageVerifier
 {}
 
 // ---------------------------------------------------------------------------
-// Vendor (WorkerEntrypoint) — top-level entry, autoProvisionsAccount: true
+// Vendor — routes /img/* HTTP requests to the correct DO
 // ---------------------------------------------------------------------------
 
 @validateRpc()
@@ -222,11 +240,25 @@ export class GatekeeperVendor extends WorkerEntrypoint<Cloudflare.Env> {
       tagline: "Generate images from text using Workers AI",
       description:
         "Use Cloudflare Workers AI to generate images from text prompts. " +
-        "Build gadgets that create illustrations, diagrams, and visuals on demand. " +
         "No external API keys required — uses your account's Workers AI allocation.",
       autoProvisionsAccount: true,
       providesAuth: false,
     };
+  }
+
+  @skipRpcValidation()
+  async fetch(request: Request): Promise<Response> {
+    const { pathname } = new URL(request.url);
+    const match = pathname.match(/^\/img\/([a-f0-9]+)\/([a-zA-Z0-9-]+)$/);
+    if (!match) return new Response("Not found", { status: 404 });
+    const [, doIdHex, imageId] = match;
+    try {
+      const doId = this.env.IMAGE_GATEKEEPER.idFromString(doIdHex);
+      const stub = this.env.IMAGE_GATEKEEPER.get(doId);
+      return stub.fetch(new Request(`http://do/img/${doIdHex}/${imageId}`));
+    } catch {
+      return new Response("Invalid image ID", { status: 400 });
+    }
   }
 
   @skipRpcValidation()
@@ -240,7 +272,7 @@ export class GatekeeperVendor extends WorkerEntrypoint<Cloudflare.Env> {
     _callback: Fetcher<GatekeeperConnectCallback>,
     _options?: GatekeeperConnectOptions,
   ): Promise<{ url: string }> {
-    throw new Error("AI Image Generation is auto-provisioned and has no connect flow.");
+    throw new Error("AI Image Generation is auto-provisioned.");
   }
 
   async getSupportedResources(_options?: { userId?: string }): Promise<SupportedResource[]> {

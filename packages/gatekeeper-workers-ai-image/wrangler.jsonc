@@ -14,6 +14,10 @@
   // gatekeepers must declare their own AI binding explicitly in wrangler.jsonc.
   "ai": { "binding": "WORKERS_AI" },
 
+  "vars": {
+    "IMAGE_WORKER_URL": "https://gatekeeper-workers-ai-image.josh-demo-account.workers.dev"
+  },
+
   "migrations": [
     {
       "tag": "v1",
