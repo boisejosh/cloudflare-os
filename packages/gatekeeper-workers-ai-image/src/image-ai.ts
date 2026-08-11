@@ -44,12 +44,10 @@ type AccountProps = { accountId: string };
 
 @validateRpc()
 class ImageSessionImpl extends RpcTarget implements ImageSession {
-  readonly #approvalQueue: NativeRpcStub<ApprovalQueue>;
   readonly #ai: Ai;
 
-  constructor(approvalQueue: NativeRpcStub<ApprovalQueue>, ai: Ai) {
+  constructor(ai: Ai) {
     super();
-    this.#approvalQueue = approvalQueue;
     this.#ai = ai;
   }
 
@@ -89,9 +87,7 @@ class ImageSessionImpl extends RpcTarget implements ImageSession {
     return { data: base64, mimeType: "image/png", prompt };
   }
 
-  [Symbol.dispose](): void {
-    this.#approvalQueue[Symbol.dispose]?.();
-  }
+
 }
 
 // ---------------------------------------------------------------------------
@@ -122,7 +118,8 @@ export class ImageGatekeeper
   }
 
   async startSession(approvalQueue: NativeRpcStub<ApprovalQueue>): Promise<ImageSession> {
-    return new ImageSessionImpl(approvalQueue.dup(), this.env.WORKERS_AI);
+    approvalQueue[Symbol.dispose]?.();
+    return new ImageSessionImpl(this.env.WORKERS_AI);
   }
 
   async getAgentCatalog(
