@@ -39,6 +39,9 @@ const PUBLIC_BASE_URL = requireEnv("PUBLIC_BASE_URL").replace(/\/$/, "");
 const KV_BLUEPRINTS_ID = requireEnv("KV_BLUEPRINTS_ID");
 const KV_AVATARS_ID    = requireEnv("KV_AVATARS_ID");
 const R2_BLUEPRINT_CONTENT = process.env.R2_BLUEPRINT_CONTENT ?? "gadgets-blueprint-content";
+// Override to deploy workshop-backend under a custom name (e.g. "josh-os-backend" for this instance).
+// The router's WORKSHOP_BACKEND service binding is updated to match automatically.
+const BACKEND_WORKER_NAME = process.env.BACKEND_WORKER_NAME ?? "workshop-backend";
 const SKIP = new Set((process.env.SKIP_PACKAGES ?? "").split(",").filter(Boolean));
 
 // Validate CLOUDFLARE_* are present (wrangler reads them directly from env).
@@ -166,7 +169,7 @@ backendConfig.services = gatekeepers.map(gk => {
 
 const backendTmp = writeTempWrangler("workshop-backend", backendConfig);
 try {
-  wrangler("backend", ["deploy", "--config", "wrangler.prod.generated.json"], backendDir);
+  wrangler("backend", ["deploy", "--config", "wrangler.prod.generated.json", "--name", BACKEND_WORKER_NAME], backendDir);
 } finally {
   removeTempWrangler("workshop-backend");
 }
@@ -180,7 +183,7 @@ const routerConfig = readWrangler("router");
 
 // Static backend binding + all gatekeeper bindings (default entrypoint for HTTP forwarding).
 routerConfig.services = [
-  { binding: "WORKSHOP_BACKEND", service: "workshop-backend" },
+  { binding: "WORKSHOP_BACKEND", service: BACKEND_WORKER_NAME },
   ...gatekeepers.map(gk => ({ binding: bindingName(gk), service: gk })),
 ];
 
