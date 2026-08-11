@@ -1168,7 +1168,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   // listing and auto-provisioning ambient gatekeepers; callers apply their own admin-mode filter.
   async #ambientVendors():
       Promise<Array<{vendorId: string, vendor: Service<GatekeeperVendor>, description: VendorDescription}>> {
-    let described = await Promise.all([...this.vendors].map(async ([vendorId, vendor]) => {
+    let described = await Promise.all([...buildGatekeeperVendorMap(this.env)].map(async ([vendorId, vendor]) => {
       try {
         let description = await vendor.describe();
         return description.autoProvisionsAccount ? {vendorId, vendor, description} : null;
