@@ -1,55 +1,39 @@
-// Workers AI Image Generation — agent-facing TypeScript declarations.
-// IMAGE_AI is automatically available as an ambient binding in every workspace.
+// Workers AI Image Generation — available as IMAGE_AI in every workspace.
 // No OAuth or external credentials required.
 
-/** Options for generating an image. */
 export interface GenerateImageOptions {
-  /**
-   * Workers AI text-to-image model. Defaults to "@cf/black-forest-labs/flux-1-schnell".
-   * Other supported model: "@cf/stabilityai/stable-diffusion-xl-base-1.0"
-   */
-  model?: string;
-  /**
-   * Number of inference steps. Higher values improve quality at the cost of latency.
-   * Omit to use the model's default (4 for flux-1-schnell).
-   */
+  model?: string;  // default: "@cf/black-forest-labs/flux-1-schnell"
   steps?: number;
 }
 
-/** A generated image. */
 export interface GeneratedImage {
-  /** Base64-encoded PNG image data (no data: prefix). */
-  data: string;
-  /** Always "image/png". */
+  data: string;        // base64-encoded PNG (no data: prefix)
   mimeType: "image/png";
-  /** The exact prompt used to generate this image. */
   prompt: string;
 }
 
 /**
  * Session for generating images with Workers AI.
  *
- * IMPORTANT — displaying images:
- * executeCode() does not expose return values to the chat — only console.log output
- * is visible. To display a generated image inline in the conversation WITHOUT creating
- * a Gadget, console.log a markdown image tag:
+ * PREFERRED USAGE — display inline in chat with no Gadget:
  *
  *   export default async function(self, env, ctx) {
- *     const img = await env.IMAGE_AI.generateImage("a sailboat at sunset");
- *     console.log(`![${img.prompt}](data:image/png;base64,${img.data})`);
+ *     const url = await env.IMAGE_AI.generateImageUrl("a sailboat at sunset");
+ *     console.log(`![generated image](${url})`);
  *   }
  *
- * The markdown image tag will render inline in the chat message. No Gadget needed.
+ * generateImageUrl() stores the image in Cloudflare and returns a short URL.
+ * The markdown image tag renders inline in the chat message.
+ * URL expires after 1 hour.
  *
- * Only create a Gadget if the user explicitly wants an interactive tool (e.g. to
- * re-generate with different prompts, or to display multiple images side-by-side).
+ * DO NOT use console.log with base64 data — it exceeds the log size limit.
+ * DO NOT create a Gadget just to display a single image — use generateImageUrl() instead.
+ * Only create a Gadget if the user explicitly wants an interactive image tool.
  */
 export interface ImageSession {
-  /**
-   * Generate an image from a text prompt using Workers AI.
-   * Returns base64-encoded PNG data in result.data.
-   *
-   * To display inline in chat: console.log(`![desc](data:image/png;base64,${img.data})`)
-   */
+  /** Returns a short URL to the generated image. Log it as a markdown image tag to display inline. */
+  generateImageUrl(prompt: string, options?: GenerateImageOptions): Promise<string>;
+
+  /** Returns raw base64 PNG data. Use only when you need the bytes directly (e.g. for another API). */
   generateImage(prompt: string, options?: GenerateImageOptions): Promise<GeneratedImage>;
 }

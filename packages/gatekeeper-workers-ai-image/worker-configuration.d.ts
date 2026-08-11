@@ -1,8 +1,9 @@
 /* eslint-disable */
-// Workers AI image gatekeeper — hand-written; regenerate with `wrangler types` after first deploy.
-// Runtime types generated with workerd@1.20260801.1 2026-02-02 allow_irrevocable_stub_storage
+// Workers AI image gatekeeper — regenerate with `wrangler types` after first deploy.
 interface __BaseEnv_Env {
   WORKERS_AI: Ai;
+  IMAGE_GATEKEEPER: DurableObjectNamespace;
+  IMAGE_WORKER_URL: string;
 }
 declare namespace Cloudflare {
   interface GlobalProps {
