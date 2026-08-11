@@ -1,6 +1,6 @@
 // Workers AI Image Generation — agent-facing TypeScript declarations.
-// This session is automatically available in every workspace as an ambient gatekeeper.
-// No OAuth or external credentials required — uses your account's Workers AI allocation.
+// IMAGE_AI is automatically available as an ambient binding in every workspace.
+// No OAuth or external credentials required.
 
 /** Options for generating an image. */
 export interface GenerateImageOptions {
@@ -18,7 +18,7 @@ export interface GenerateImageOptions {
 
 /** A generated image. */
 export interface GeneratedImage {
-  /** Base64-encoded PNG image data. */
+  /** Base64-encoded PNG image data (no data: prefix). */
   data: string;
   /** Always "image/png". */
   mimeType: "image/png";
@@ -29,14 +29,27 @@ export interface GeneratedImage {
 /**
  * Session for generating images with Workers AI.
  *
- * @example
- * const img = await IMAGE_AI.generateImage("a golden retriever on a beach at sunset");
- * // Embed in HTML: <img src={`data:image/png;base64,${img.data}`} />
+ * IMPORTANT — displaying images:
+ * executeCode() does not expose return values to the chat — only console.log output
+ * is visible. To display a generated image inline in the conversation WITHOUT creating
+ * a Gadget, console.log a markdown image tag:
+ *
+ *   export default async function(self, env, ctx) {
+ *     const img = await env.IMAGE_AI.generateImage("a sailboat at sunset");
+ *     console.log(`![${img.prompt}](data:image/png;base64,${img.data})`);
+ *   }
+ *
+ * The markdown image tag will render inline in the chat message. No Gadget needed.
+ *
+ * Only create a Gadget if the user explicitly wants an interactive tool (e.g. to
+ * re-generate with different prompts, or to display multiple images side-by-side).
  */
 export interface ImageSession {
   /**
    * Generate an image from a text prompt using Workers AI.
-   * Returns the image as base64-encoded PNG data.
+   * Returns base64-encoded PNG data in result.data.
+   *
+   * To display inline in chat: console.log(`![desc](data:image/png;base64,${img.data})`)
    */
   generateImage(prompt: string, options?: GenerateImageOptions): Promise<GeneratedImage>;
 }
