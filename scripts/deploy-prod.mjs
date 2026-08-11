@@ -38,6 +38,13 @@ const PUBLIC_BASE_URL = requireEnv("PUBLIC_BASE_URL").replace(/\/$/, "");
 const KV_BLUEPRINTS_ID = requireEnv("KV_BLUEPRINTS_ID");
 const KV_AVATARS_ID    = requireEnv("KV_AVATARS_ID");
 const R2_BLUEPRINT_CONTENT = process.env.R2_BLUEPRINT_CONTENT ?? "josh-os-blueprint-content";
+// Comma-separated list of gatekeeper package names to deploy and bind.
+// Only bind gatekeepers whose Workers exist in the account — adding a binding to
+// a non-existent worker causes the backend deploy to fail.
+// Default: the three currently deployed gatekeepers (add more as you enable them).
+const ACTIVE_GATEKEEPERS = (process.env.ACTIVE_GATEKEEPERS ?? 
+  "gatekeeper-context,gatekeeper-scheduler,gatekeeper-workers-ai-image"
+).split(",").filter(Boolean);
 const SKIP_GK = new Set((process.env.SKIP_GATEKEEPERS ?? "").split(",").filter(Boolean));
 
 // ---------------------------------------------------------------------------
@@ -88,8 +95,9 @@ const gatekeepers = readdirSync(PACKAGES_DIR, { withFileTypes: true })
   .map(e => e.name)
   .sort();
 
-// Build the list of {pkgName, deployedWorkerName} for service binding generation
-const gkBindings = gatekeepers.map(pkg => {
+// Only build service bindings for ACTIVE_GATEKEEPERS — the rest are deployed but not bound.
+// Adding a binding to a non-existent worker causes the deploy to fail.
+const gkBindings = ACTIVE_GATEKEEPERS.map(pkg => {
   const cfg = readWrangler(pkg);
   return { pkg, workerName: deployedName(pkg, cfg.name) };
 });
