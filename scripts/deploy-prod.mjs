@@ -1,21 +1,21 @@
 #!/usr/bin/env node
 
-// Deploys the full Cloudflare OS stack directly via wrangler — no separate deploy service needed.
+// Deploys the full Cloudflare OS stack directly via wrangler.
 //
-// This script replicates what the internal generate-wrangler-prod.js does: it discovers all
-// gatekeeper packages, injects service bindings into the backend and router, and deploys every
-// worker in the correct order (gatekeepers → backend → router).
+// Discovers all gatekeeper packages, resolves their deployed worker names,
+// injects service bindings into the backend and router, and deploys every
+// worker in order: gatekeepers → backend → router.
 //
 // Required env vars:
-//   CLOUDFLARE_ACCOUNT_ID   — Cloudflare account ID
+//   CLOUDFLARE_ACCOUNT_ID   — Cloudflare account ID (wrangler reads this)
 //   CLOUDFLARE_API_TOKEN    — API token (Workers:Edit, KV:Edit, R2:Edit, AI:Read)
-//   PUBLIC_BASE_URL         — production origin, e.g. https://os.example.com
-//   KV_BLUEPRINTS_ID        — KV namespace ID for the BLUEPRINTS binding
-//   KV_AVATARS_ID           — KV namespace ID for the AVATARS binding
+//   PUBLIC_BASE_URL         — production origin e.g. https://josh-os.josh-demo-account.workers.dev
+//   KV_BLUEPRINTS_ID        — KV namespace ID for BLUEPRINTS binding
+//   KV_AVATARS_ID           — KV namespace ID for AVATARS binding
 //
-// Optional env vars:
-//   R2_BLUEPRINT_CONTENT    — R2 bucket name (default: gadgets-blueprint-content)
-//   SKIP_PACKAGES           — comma-separated package names to skip
+// Optional:
+//   R2_BLUEPRINT_CONTENT    — R2 bucket name (default: josh-os-blueprint-content)
+//   SKIP_GATEKEEPERS        — comma-separated package names to skip deploying (already current)
 
 import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
@@ -26,59 +26,31 @@ import { parse as parseJsonc } from "jsonc-parser";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PACKAGES_DIR = join(ROOT, "packages");
 
-// ---------------------------------------------------------------------------
-// Env validation
-// ---------------------------------------------------------------------------
 function requireEnv(name) {
   const v = process.env[name];
   if (!v) throw new Error(`Missing required env var: ${name}`);
   return v;
 }
 
+requireEnv("CLOUDFLARE_ACCOUNT_ID");
+requireEnv("CLOUDFLARE_API_TOKEN");
 const PUBLIC_BASE_URL = requireEnv("PUBLIC_BASE_URL").replace(/\/$/, "");
 const KV_BLUEPRINTS_ID = requireEnv("KV_BLUEPRINTS_ID");
 const KV_AVATARS_ID    = requireEnv("KV_AVATARS_ID");
-const R2_BLUEPRINT_CONTENT = process.env.R2_BLUEPRINT_CONTENT ?? "gadgets-blueprint-content";
-// Override to deploy workshop-backend under a custom name (e.g. "josh-os-backend" for this instance).
-// The router's WORKSHOP_BACKEND service binding is updated to match automatically.
-const BACKEND_WORKER_NAME = process.env.BACKEND_WORKER_NAME ?? "workshop-backend";
-const SKIP = new Set((process.env.SKIP_PACKAGES ?? "").split(",").filter(Boolean));
-
-// Validate CLOUDFLARE_* are present (wrangler reads them directly from env).
-requireEnv("CLOUDFLARE_ACCOUNT_ID");
-requireEnv("CLOUDFLARE_API_TOKEN");
+const R2_BLUEPRINT_CONTENT = process.env.R2_BLUEPRINT_CONTENT ?? "josh-os-blueprint-content";
+const SKIP_GK = new Set((process.env.SKIP_GATEKEEPERS ?? "").split(",").filter(Boolean));
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Name mapping — maps package name → deployed worker name where they differ.
+// Packages not in this map are deployed using their wrangler.jsonc name field.
 // ---------------------------------------------------------------------------
-function run(label, cmd, args, cwd = ROOT) {
-  console.log(`\n▶ [${label}] ${cmd} ${args.join(" ")}`);
-  execFileSync(cmd, args, { stdio: "inherit", cwd });
-}
+const DEPLOYED_NAME = {
+  "gatekeeper-context":   "josh-os-gk-context",
+  "gatekeeper-scheduler": "josh-os-gk-scheduler",
+};
 
-function wrangler(label, args, cwd) {
-  // Use the locally pinned wrangler from node_modules.
-  run(label, "pnpm", ["exec", "wrangler", ...args], cwd);
-}
-
-function pkgDir(name) {
-  return join(PACKAGES_DIR, name);
-}
-
-function readWrangler(name) {
-  const p = join(pkgDir(name), "wrangler.jsonc");
-  return parseJsonc(readFileSync(p, "utf8"), [], { allowTrailingComma: true });
-}
-
-function writeTempWrangler(name, config) {
-  const p = join(pkgDir(name), "wrangler.prod.generated.json");
-  writeFileSync(p, JSON.stringify(config, null, 2));
-  return p;
-}
-
-function removeTempWrangler(name) {
-  const p = join(pkgDir(name), "wrangler.prod.generated.json");
-  rmSync(p, { force: true });
+function deployedName(pkgName, wranglerName) {
+  return DEPLOYED_NAME[pkgName] ?? wranglerName;
 }
 
 // "gatekeeper-workers-ai-image" → "GATEKEEPER_WORKERS_AI_IMAGE"
@@ -86,26 +58,54 @@ function bindingName(pkgName) {
   return pkgName.toUpperCase().replace(/-/g, "_");
 }
 
-// ---------------------------------------------------------------------------
-// Package discovery
-// ---------------------------------------------------------------------------
-const allGatekeepers = readdirSync(PACKAGES_DIR, { withFileTypes: true })
+function run(label, cmd, args, cwd = ROOT) {
+  console.log(`\n▶ [${label}] ${cmd} ${args.join(" ")}`);
+  execFileSync(cmd, args, { stdio: "inherit", cwd });
+}
+
+function wranglerDeploy(label, configPath, cwd) {
+  run(label, "pnpm", ["exec", "wrangler", "deploy", "--config", configPath], cwd);
+}
+
+function readWrangler(pkgName) {
+  const p = join(PACKAGES_DIR, pkgName, "wrangler.jsonc");
+  return parseJsonc(readFileSync(p, "utf8"), [], { allowTrailingComma: true });
+}
+
+function writeTmp(pkgName, config) {
+  const p = join(PACKAGES_DIR, pkgName, "wrangler.prod.generated.json");
+  writeFileSync(p, JSON.stringify(config, null, 2));
+  return p;
+}
+
+function cleanTmp(pkgName) {
+  rmSync(join(PACKAGES_DIR, pkgName, "wrangler.prod.generated.json"), { force: true });
+}
+
+// Discover all gatekeeper packages
+const gatekeepers = readdirSync(PACKAGES_DIR, { withFileTypes: true })
   .filter(e => e.isDirectory() && e.name.startsWith("gatekeeper-"))
   .map(e => e.name)
   .sort();
 
-const gatekeepers = allGatekeepers.filter(gk => !SKIP.has(gk));
-console.log(`\nGatekeepers (${gatekeepers.length}): ${gatekeepers.join(", ")}`);
+// Build the list of {pkgName, deployedWorkerName} for service binding generation
+const gkBindings = gatekeepers.map(pkg => {
+  const cfg = readWrangler(pkg);
+  return { pkg, workerName: deployedName(pkg, cfg.name) };
+});
+
+console.log("=== Cloudflare OS — Production Deploy ===");
 console.log(`PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}`);
+console.log("Gatekeepers:", gkBindings.map(g => `${g.pkg}→${g.workerName}`).join(", "));
 
 // ---------------------------------------------------------------------------
-// Step 1 — Install dependencies
+// Step 1 — Install
 // ---------------------------------------------------------------------------
 console.log("\n=== Step 1: Install dependencies ===");
 run("install", "pnpm", ["install", "--frozen-lockfile"]);
 
 // ---------------------------------------------------------------------------
-// Step 2 — Build typed-storage (backend imports its dist output)
+// Step 2 — Build typed-storage (backend requires its dist output)
 // ---------------------------------------------------------------------------
 console.log("\n=== Step 2: Build typed-storage ===");
 run("typed-storage", "pnpm", ["--filter", "@gadgets/typed-storage", "build"]);
@@ -117,82 +117,81 @@ console.log("\n=== Step 3: Build frontend ===");
 run("frontend", "pnpm", ["--filter", "@gadgets/workshop-frontend", "exec", "vite", "build"]);
 
 // ---------------------------------------------------------------------------
-// Step 4 — Deploy each gatekeeper
+// Step 4 — Build + deploy each gatekeeper (unless skipped)
 // ---------------------------------------------------------------------------
 console.log("\n=== Step 4: Deploy gatekeepers ===");
-for (const gk of gatekeepers) {
-  const dir = pkgDir(gk);
-  console.log(`\n  → ${gk}`);
-  // capnweb-validate generates .wrangler/validate (the wrangler main entry).
-  run(gk, "pnpm", ["exec", "capnweb-validate", "build", "--out", ".wrangler/validate"], dir);
-  wrangler(gk, ["deploy"], dir);
+for (const { pkg, workerName } of gkBindings) {
+  if (SKIP_GK.has(pkg)) {
+    console.log(`  ↷ skipping ${pkg} (SKIP_GATEKEEPERS)`);
+    continue;
+  }
+  const dir = join(PACKAGES_DIR, pkg);
+  console.log(`\n  → ${pkg} (${workerName})`);
+
+  // Build the validated worker bundle
+  run(pkg, "pnpm", ["exec", "capnweb-validate", "build", "--out", ".wrangler/validate"], dir);
+
+  // Generate wrangler config with the correct deployed name
+  const cfg = readWrangler(pkg);
+  const prodCfg = { ...cfg, name: workerName };
+  const tmpPath = writeTmp(pkg, prodCfg);
+  try {
+    wranglerDeploy(pkg, "wrangler.prod.generated.json", dir);
+  } finally {
+    cleanTmp(pkg);
+  }
 }
 
 // ---------------------------------------------------------------------------
-// Step 5 — Build + deploy workshop-backend (with injected bindings)
+// Step 5 — Build + deploy workshop-backend (josh-os-backend)
 // ---------------------------------------------------------------------------
-console.log("\n=== Step 5: Deploy workshop-backend ===");
-const backendDir = pkgDir("workshop-backend");
-
-// Build the validated worker bundle first.
+console.log("\n=== Step 5: Deploy backend (josh-os-backend) ===");
+const backendDir = join(PACKAGES_DIR, "workshop-backend");
 run("backend:build", "pnpm", ["run", "build:worker"], backendDir);
 
-// Read the static wrangler.jsonc and patch in all dynamic bindings.
-const backendConfig = readWrangler("workshop-backend");
-
-// KV namespaces — replace preview_id placeholders with real IDs.
-backendConfig.kv_namespaces = [
+const backendCfg = readWrangler("workshop-backend");
+backendCfg.name = "josh-os-backend";
+backendCfg.kv_namespaces = [
   { binding: "BLUEPRINTS", id: KV_BLUEPRINTS_ID },
   { binding: "AVATARS",    id: KV_AVATARS_ID    },
 ];
-
-// R2 bucket.
-backendConfig.r2_buckets = [
-  { binding: "BLUEPRINT_CONTENT", bucket_name: R2_BLUEPRINT_CONTENT },
-];
-
-// Workers AI binding (every backend instance gets this).
-backendConfig.ai = { binding: "WORKERS_AI" };
-
-// Instance vars.
-backendConfig.vars = { ...(backendConfig.vars ?? {}), PUBLIC_BASE_URL };
-
-// Gatekeeper service bindings (GATEKEEPER_* → each gatekeeper's GatekeeperVendor entrypoint).
-backendConfig.services = gatekeepers.map(gk => {
-  const binding = { binding: bindingName(gk), service: gk, entrypoint: "GatekeeperVendor" };
-  // gatekeeper-context requires a sharingDomain prop so it namespaces data per workshop instance.
-  if (gk === "gatekeeper-context") {
-    binding.props = { sharingDomain: PUBLIC_BASE_URL };
-  }
+backendCfg.r2_buckets   = [{ binding: "BLUEPRINT_CONTENT", bucket_name: R2_BLUEPRINT_CONTENT }];
+backendCfg.ai           = { binding: "WORKERS_AI" };
+backendCfg.vars         = { ...(backendCfg.vars ?? {}), PUBLIC_BASE_URL };
+backendCfg.services     = gkBindings.map(({ pkg, workerName }) => {
+  const binding = { binding: bindingName(pkg), service: workerName, entrypoint: "GatekeeperVendor" };
+  if (pkg === "gatekeeper-context") binding.props = { sharingDomain: PUBLIC_BASE_URL };
   return binding;
 });
 
-const backendTmp = writeTempWrangler("workshop-backend", backendConfig);
+const backendTmp = writeTmp("workshop-backend", backendCfg);
 try {
-  wrangler("backend", ["deploy", "--config", "wrangler.prod.generated.json", "--name", BACKEND_WORKER_NAME], backendDir);
+  wranglerDeploy("backend", "wrangler.prod.generated.json", backendDir);
 } finally {
-  removeTempWrangler("workshop-backend");
+  cleanTmp("workshop-backend");
 }
 
 // ---------------------------------------------------------------------------
-// Step 6 — Deploy router (with gatekeeper HTTP-forward bindings + assets)
+// Step 6 — Deploy router (josh-os)
 // ---------------------------------------------------------------------------
-console.log("\n=== Step 6: Deploy router ===");
-const routerDir = pkgDir("router");
-const routerConfig = readWrangler("router");
+console.log("\n=== Step 6: Deploy router (josh-os) ===");
+const routerDir = join(PACKAGES_DIR, "router");
+run("router:build", "pnpm", ["exec", "capnweb-validate", "build", "--out", ".wrangler/validate"], routerDir);
 
-// Static backend binding + all gatekeeper bindings (default entrypoint for HTTP forwarding).
-routerConfig.services = [
-  { binding: "WORKSHOP_BACKEND", service: BACKEND_WORKER_NAME },
-  ...gatekeepers.map(gk => ({ binding: bindingName(gk), service: gk })),
+const routerCfg = readWrangler("router");
+// Router already has "name": "josh-os" in wrangler.jsonc — no override needed.
+// Inject the full set of gatekeeper bindings (HTTP forwarding, default entrypoint).
+routerCfg.services = [
+  { binding: "WORKSHOP_BACKEND", service: "josh-os-backend" },
+  ...gkBindings.map(({ pkg, workerName }) => ({ binding: bindingName(pkg), service: workerName })),
 ];
 
-const routerTmp = writeTempWrangler("router", routerConfig);
+const routerTmp = writeTmp("router", routerCfg);
 try {
-  wrangler("router", ["deploy", "--config", "wrangler.prod.generated.json"], routerDir);
+  wranglerDeploy("router", "wrangler.prod.generated.json", routerDir);
 } finally {
-  removeTempWrangler("router");
+  cleanTmp("router");
 }
 
-console.log("\n✅ All workers deployed to production.");
+console.log("\n✅ All workers deployed.");
 console.log(`   Live at: ${PUBLIC_BASE_URL}`);
