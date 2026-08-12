@@ -442,6 +442,23 @@ export class GitHubApi {
     return result.data;
   }
 
+  async getFileContents(owner, repo, path, ref) {
+    const query = {};
+    if (ref) query.ref = ref;
+    const safePath = path.replace(/^\//, "");
+    const result = await this.#request(
+      "GET",
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${safePath}`,
+      { query },
+    );
+    const data = result.data;
+    if (Array.isArray(data)) {
+      return { type: "dir", entries: data.map(e => ({ type: e.type, name: e.name, path: e.path, size: e.size, sha: e.sha })) };
+    }
+    if (data.type !== "file") throw new Error(`Unsupported content type: ${data.type}`);
+    return { type: "file", content: (data.content ?? "").replace(/\n/g, ""), encoding: "base64", name: data.name, path: data.path, size: data.size, sha: data.sha };
+  }
+
   async getRepoConditional(
     owner: string,
     repo: string,

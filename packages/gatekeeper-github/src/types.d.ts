@@ -4,11 +4,20 @@
  * A GitHub repo is a Git repo *plus* issues, pull requests, etc.
  */
 export interface GitHubRepo {
-  // TODO: Add methods to access code. Maybe represent that as `GitRepository`. For now we only
-  //   expose issues and PRs.
-
   /** Returns basic metadata about the repository. */
   getMetadata(): Promise<GitHubRepoMetadata>;
+
+  /**
+   * Returns the contents of a file or directory in the repository.
+   * For files: `result.content` is base64 — decode with `atob(result.content)`.
+   * For directories: `result.entries` lists immediate children.
+   * @param path Path relative to repo root e.g. `'src/index.ts'`
+   * @param ref  Branch, tag, or commit SHA. Defaults to the repo default branch.
+   */
+  getFileContents(path: string, ref?: string): Promise<
+    | { type: "file"; content: string; encoding: "base64"; name: string; path: string; size: number; sha: string }
+    | { type: "dir"; entries: Array<{ type: string; name: string; path: string; size: number; sha: string }> }
+  >;
 
   /**
    * Creates a new issue in this repository.

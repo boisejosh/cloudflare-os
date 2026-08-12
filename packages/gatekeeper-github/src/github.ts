@@ -3567,6 +3567,12 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     return this.#getRepoMetadata();
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async getFileContents(path: string, ref?: string): Promise<any> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return this.#withApi((api: any) => api.getFileContents(this.ctx.props.owner, this.ctx.props.repo, path, ref));
+  }
+
   async openIssue(id: string): Promise<GitHubIssueDetails> {
     return this.#getIssueDetails(id);
   }
