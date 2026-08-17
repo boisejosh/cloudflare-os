@@ -20,6 +20,108 @@ export interface GitHubRepo {
   >;
 
   /**
+   * Creates or updates a file in the repository.
+   * Pass plain UTF-8 text — no base64 encoding needed.
+   * Automatically handles the blob SHA for updates.
+   *
+   * @param path    Path relative to repo root, e.g. `'src/index.ts'`
+   * @param content Full file content as a UTF-8 string.
+   * @param message Commit message.
+   * @param options `branch`: target branch (defaults to the repo default branch).
+   */
+  writeFile(path: string, content: string, message: string, options?: { branch?: string }): Promise<void>;
+
+  /**
+   * Deletes a file from the repository. Automatically fetches the current blob SHA.
+   *
+   * @param path    Path relative to repo root.
+   * @param message Commit message.
+   * @param options `branch`: target branch (defaults to the repo default branch).
+   */
+  deleteFile(path: string, message: string, options?: { branch?: string }): Promise<void>;
+
+  /**
+   * Creates a new branch.
+   *
+   * @param name    Name for the new branch, e.g. `'feat/my-feature'`.
+   * @param fromRef Existing branch to branch from (defaults to the repo default branch).
+   */
+  createBranch(name: string, fromRef?: string): Promise<void>;
+
+  /**
+   * Commits multiple file changes atomically in a single git commit.
+   * Preferred over multiple `writeFile` calls for multi-file changes.
+   * Set `content` to `null` to delete a file.
+   *
+   * @param files   Files to create, update, or delete.
+   * @param message Commit message.
+   * @param options `branch`: target branch (defaults to the repo default branch).
+   * @returns       The SHA of the new commit.
+   *
+   * @example
+   *   const { commitSha } = await repo.pushFiles([
+   *     { path: 'src/foo.ts', content: 'export const foo = 42;' },
+   *     { path: 'old-file.ts', content: null },  // delete
+   *   ], 'refactor: rename foo');
+   */
+  pushFiles(
+    files: Array<{ path: string; content: string | null }>,
+    message: string,
+    options?: { branch?: string },
+  ): Promise<{ commitSha: string }>;
+
+  /**
+   * Creates or updates a file in the repository.
+   * Pass plain UTF-8 text — no base64 encoding needed.
+   * Automatically handles the blob SHA for updates.
+   *
+   * @param path    Path relative to repo root, e.g. `'src/index.ts'`
+   * @param content Full file content as a UTF-8 string.
+   * @param message Commit message.
+   * @param options `branch`: target branch (defaults to the repo default branch).
+   */
+  writeFile(path: string, content: string, message: string, options?: { branch?: string }): Promise<void>;
+
+  /**
+   * Deletes a file from the repository. Automatically fetches the current blob SHA.
+   *
+   * @param path    Path relative to repo root.
+   * @param message Commit message.
+   * @param options `branch`: target branch (defaults to the repo default branch).
+   */
+  deleteFile(path: string, message: string, options?: { branch?: string }): Promise<void>;
+
+  /**
+   * Creates a new branch.
+   *
+   * @param name    Name for the new branch, e.g. `'feat/my-feature'`.
+   * @param fromRef Existing branch to branch from (defaults to the repo default branch).
+   */
+  createBranch(name: string, fromRef?: string): Promise<void>;
+
+  /**
+   * Commits multiple file changes atomically in a single git commit.
+   * Preferred over multiple `writeFile` calls for multi-file changes.
+   * Set `content` to `null` to delete a file.
+   *
+   * @param files   Files to create, update, or delete.
+   * @param message Commit message.
+   * @param options `branch`: target branch (defaults to the repo default branch).
+   * @returns       The SHA of the new commit.
+   *
+   * @example
+   *   const { commitSha } = await repo.pushFiles([
+   *     { path: 'src/foo.ts', content: 'export const foo = 42;' },
+   *     { path: 'old-file.ts', content: null },  // delete
+   *   ], 'refactor: rename foo');
+   */
+  pushFiles(
+    files: Array<{ path: string; content: string | null }>,
+    message: string,
+    options?: { branch?: string },
+  ): Promise<{ commitSha: string }>;
+
+  /**
    * Creates a new issue in this repository.
    *
    * The issue may not be created on GitHub immediately. While creation is pending, the

@@ -3577,6 +3577,122 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     return this.#withApi((api: any) => api.getFileContents(this.ctx.props.owner, this.ctx.props.repo, path, ref));
   }
 
+  // ── Write operations ─────────────────────────────────────────────────────
+
+  /**
+   * Creates or updates a file. content is a plain UTF-8 string — no base64 needed.
+   * Automatically fetches the current file SHA for updates.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async writeFile(path: string, content: string, message: string, options?: { branch?: string }): Promise<void> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return this.#withApi(async (api: any) => {
+      // Encode UTF-8 → base64
+      const encoder = new TextEncoder();
+      const bytes = encoder.encode(content);
+      let binary = "";
+      for (const byte of bytes) binary += String.fromCharCode(byte);
+      const base64 = btoa(binary);
+
+      // Get current blob SHA (required for updates; undefined for new files)
+      let sha: string | undefined;
+      try {
+        const existing = await api.getFileContents(
+          this.ctx.props.owner, this.ctx.props.repo, path, options?.branch,
+        );
+        if (existing.type === "file") sha = existing.sha;
+      } catch { /* file doesn't exist yet — create it */ }
+
+      await api.createOrUpdateFile(
+        this.ctx.props.owner, this.ctx.props.repo, path, message, base64, sha, options?.branch,
+      );
+    });
+  }
+
+  /**
+   * Deletes a file. Automatically fetches the current blob SHA.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async deleteFile(path: string, message: string, options?: { branch?: string }): Promise<void> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return this.#withApi(async (api: any) => {
+      const existing = await api.getFileContents(
+        this.ctx.props.owner, this.ctx.props.repo, path, options?.branch,
+      );
+      if (existing.type !== "file") throw new Error(`Cannot delete: ${path} is a directory`);
+      await api.deleteFileByPath(
+        this.ctx.props.owner, this.ctx.props.repo, path, message, existing.sha, options?.branch,
+      );
+    });
+  }
+
+  /**
+   * Creates a new branch. Defaults to branching from the repo's default branch.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async createBranch(name: string, fromRef?: string): Promise<void> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return this.#withApi(async (api: any) => {
+      const base = fromRef ?? (await api.getRepo(this.ctx.props.owner, this.ctx.props.repo)).data.default_branch;
+      const refData = await api.getRef(this.ctx.props.owner, this.ctx.props.repo, `heads/${base}`);
+      const sha = refData.data.object.sha;
+      await api.createRef(this.ctx.props.owner, this.ctx.props.repo, `refs/heads/${name}`, sha);
+    });
+  }
+
+  /**
+   * Commits multiple file changes atomically in a single git commit.
+   * Set content to null to delete a file. Returns the new commit SHA.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async pushFiles(
+    files: Array<{ path: string; content: string | null }>,
+    message: string,
+    options?: { branch?: string },
+  ): Promise<{ commitSha: string }> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return this.#withApi(async (api: any) => {
+      const branch = options?.branch
+        ?? (await api.getRepo(this.ctx.props.owner, this.ctx.props.repo)).data.default_branch;
+
+      // Walk back to the current tree SHA
+      const refData = await api.getRef(this.ctx.props.owner, this.ctx.props.repo, `heads/${branch}`);
+      const baseSha = refData.data.object.sha;
+      const commitData = await api.getCommit(this.ctx.props.owner, this.ctx.props.repo, baseSha);
+      const baseTreeSha = commitData.data.tree.sha;
+
+      // Create blobs in parallel, build tree items
+      const treeItems = await Promise.all(
+        files.map(async (file) => {
+          if (file.content === null) {
+            // sha: null = delete this path from the tree
+            return { path: file.path, mode: "100644", type: "blob", sha: null };
+          }
+          // UTF-8 → base64
+          const encoder = new TextEncoder();
+          const bytes = encoder.encode(file.content);
+          let binary = "";
+          for (const byte of bytes) binary += String.fromCharCode(byte);
+          const base64 = btoa(binary);
+          const blob = await api.createBlob(this.ctx.props.owner, this.ctx.props.repo, base64, "base64");
+          return { path: file.path, mode: "100644", type: "blob", sha: blob.data.sha };
+        }),
+      );
+
+      const tree = await api.createTree(
+        this.ctx.props.owner, this.ctx.props.repo, treeItems, baseTreeSha,
+      );
+      const commit = await api.createCommit(
+        this.ctx.props.owner, this.ctx.props.repo, message, tree.data.sha, [baseSha],
+      );
+      await api.updateRef(this.ctx.props.owner, this.ctx.props.repo, `heads/${branch}`, commit.data.sha);
+
+      return { commitSha: commit.data.sha };
+    });
+  }
+
+  // ── End write operations ─────────────────────────────────────────────────
+
   async openIssue(id: string): Promise<GitHubIssueDetails> {
     return this.#getIssueDetails(id);
   }

@@ -461,6 +461,96 @@ export class GitHubApi {
     return { type: "file", content: (data.content ?? "").replace(/\n/g, ""), encoding: "base64", name: data.name, path: data.path, size: data.size, sha: data.sha };
   }
 
+  // ── Write / Git operations ──────────────────────────────────────────────
+
+  /** Create or update a single file. content must be base64-encoded. */
+  async createOrUpdateFile(
+    owner: string, repo: string, path: string, message: string,
+    content: string, sha?: string, branch?: string,
+  ): Promise<unknown> {
+    const safePath = path.replace(/^\//, "");
+    const body: Record<string, unknown> = { message, content };
+    if (sha) body.sha = sha;
+    if (branch) body.branch = branch;
+    return this.#request<unknown>("PUT",
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${safePath}`,
+      { body });
+  }
+
+  /** Delete a file. sha is the blob SHA of the file being deleted. */
+  async deleteFileByPath(
+    owner: string, repo: string, path: string, message: string,
+    sha: string, branch?: string,
+  ): Promise<void> {
+    const safePath = path.replace(/^\//, "");
+    const body: Record<string, unknown> = { message, sha };
+    if (branch) body.branch = branch;
+    await this.#request<unknown>("DELETE",
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${safePath}`,
+      { body });
+  }
+
+  /** Get the SHA of a ref, e.g. "heads/main". */
+  async getRef(owner: string, repo: string, ref: string): Promise<unknown> {
+    const normalised = ref.replace(/^refs\//, "");
+    return this.#request<unknown>("GET",
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/ref/${normalised}`,
+      {});
+  }
+
+  /** Create a new branch ref. */
+  async createRef(owner: string, repo: string, ref: string, sha: string): Promise<void> {
+    await this.#request<unknown>("POST",
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/refs`,
+      { body: { ref, sha } });
+  }
+
+  /** Get a git commit object (to find its tree SHA). */
+  async getCommit(owner: string, repo: string, commitSha: string): Promise<unknown> {
+    return this.#request<unknown>("GET",
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/commits/${commitSha}`,
+      {});
+  }
+
+  /** Create a git blob from base64-encoded content. Returns { data: { sha } }. */
+  async createBlob(owner: string, repo: string, content: string, encoding = "base64"): Promise<{ data: { sha: string } }> {
+    return this.#request<{ sha: string }>("POST",
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/blobs`,
+      { body: { content, encoding } }) as Promise<{ data: { sha: string } }>;
+  }
+
+  /** Create a git tree. Set sha to null to delete a file. Returns { data: { sha } }. */
+  async createTree(
+    owner: string, repo: string,
+    tree: Array<{ path: string; mode: string; type: string; sha: string | null }>,
+    base_tree?: string,
+  ): Promise<{ data: { sha: string } }> {
+    const body: Record<string, unknown> = { tree };
+    if (base_tree) body.base_tree = base_tree;
+    return this.#request<{ sha: string }>("POST",
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/trees`,
+      { body }) as Promise<{ data: { sha: string } }>;
+  }
+
+  /** Create a git commit. Returns { data: { sha } }. */
+  async createCommit(
+    owner: string, repo: string, message: string, tree: string, parents: string[],
+  ): Promise<{ data: { sha: string } }> {
+    return this.#request<{ sha: string }>("POST",
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/commits`,
+      { body: { message, tree, parents } }) as Promise<{ data: { sha: string } }>;
+  }
+
+  /** Move a branch ref to a new commit SHA. */
+  async updateRef(owner: string, repo: string, ref: string, sha: string, force = false): Promise<void> {
+    const normalised = ref.replace(/^refs\//, "");
+    await this.#request<unknown>("PATCH",
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/refs/${normalised}`,
+      { body: { sha, force } });
+  }
+
+  // ── End write operations ─────────────────────────────────────────────────
+
   async getRepoConditional(
     owner: string,
     repo: string,
