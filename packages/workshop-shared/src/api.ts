@@ -866,6 +866,11 @@ export type AdminSettingsView = {
   resourceVendors: AdminResourceVendor[];
   /** The blueprints promoted as standard output formats, in menu order (including disabled ones). */
   formats: AdminFormat[];
+  /**
+   * Allowlist of model IDs available to all users. Empty = no restriction (all models allowed).
+   * Set by the admin via the Models tab.
+   */
+  allowedModels: string[];
 };
 
 /**
@@ -1013,6 +1018,12 @@ export interface AdminApi {
 
   /** Reorder the menu. `blueprintIds` must be a permutation of the currently promoted ids. */
   setFormatOrder(blueprintIds: string[]): Promise<void>;
+
+  /**
+   * Set the deployment-wide model allowlist. Pass an empty array to allow all models.
+   * Models not in the allowlist are hidden from the model picker.
+   */
+  setAllowedModels(models: string[]): Promise<void>;
 }
 
 /** A partial edit to one promoted format. Absent fields are left alone. */
@@ -1091,6 +1102,8 @@ export type ServerConfig = {
    * overrides the brand CSS variables with this (and derived shades) at runtime.
    */
   accentColor: string;
+  /** Allowlist of model IDs. Empty = all models allowed. */
+  allowedModels: string[];
 };
 
 /**
@@ -1181,12 +1194,79 @@ export const SUGGESTED_MODELS: Record<
   Record<string, {name: string, contextWindow: number, outputLimit?: number}>
 > = {
   "cloudflare": {
+    // Meta Llama
+    "@cf/meta/llama-4-scout-17b-16e-instruct": {
+      name: "Llama 4 Scout 17B (Workers AI)", contextWindow: 131000, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+    },
+    "@cf/meta/llama-3.3-70b-instruct-fp8-fast": {
+      name: "Llama 3.3 70B Fast (Workers AI)", contextWindow: 24000, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+    },
+    "@cf/meta/llama-3.2-11b-vision-instruct": {
+      name: "Llama 3.2 11B Vision (Workers AI)", contextWindow: 128000, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+    },
+    "@cf/meta/llama-3.2-3b-instruct": {
+      name: "Llama 3.2 3B (Workers AI)", contextWindow: 80000, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+    },
+    "@cf/meta/llama-3.2-1b-instruct": {
+      name: "Llama 3.2 1B (Workers AI)", contextWindow: 60000, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+    },
+    "@cf/meta/llama-3.1-8b-instruct-fp8": {
+      name: "Llama 3.1 8B (Workers AI)", contextWindow: 32000, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+    },
+    // DeepSeek
+    "@cf/deepseek-ai/deepseek-v4-pro-0813": {
+      name: "DeepSeek V4 Pro (Workers AI)", contextWindow: 1048576, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+    },
+    "@cf/deepseek-ai/deepseek-v4-flash-0731": {
+      name: "DeepSeek V4 Flash (Workers AI)", contextWindow: 1310720, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+    },
+    "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b": {
+      name: "DeepSeek R1 Distill 32B (Workers AI)", contextWindow: 80000, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+    },
+    // Qwen
+    "@cf/qwen/qwq-32b": {
+      name: "QwQ 32B (Workers AI)", contextWindow: 24000, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+    },
+    "@cf/qwen/qwen3-30b-a3b-fp8": {
+      name: "Qwen3 30B (Workers AI)", contextWindow: 32768, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+    },
+    "@cf/qwen/qwen2.5-coder-32b-instruct": {
+      name: "Qwen 2.5 Coder 32B (Workers AI)", contextWindow: 32768, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+    },
+    // Moonshot / GLM / ZAI
     "@cf/moonshotai/kimi-k2.7-code": {
-      name: "Kimi K2.7 Code (Workers AI)", contextWindow: 262144,
-      outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+      name: "Kimi K2.7 Code (Workers AI)", contextWindow: 262144, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+    },
+    "@cf/moonshotai/kimi-k2.6": {
+      name: "Kimi K2.6 (Workers AI)", contextWindow: 262144, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
     },
     "@cf/zai-org/glm-5.2": {
       name: "GLM 5.2 (Workers AI)", contextWindow: 262144, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+    },
+    "@cf/zai-org/glm-4.7-flash": {
+      name: "GLM 4.7 Flash (Workers AI)", contextWindow: 131072, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+    },
+    // Google / Mistral / Nvidia / IBM / OpenAI OSS
+    "@cf/google/gemma-4-26b-a4b-it": {
+      name: "Gemma 4 26B (Workers AI)", contextWindow: 256000, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+    },
+    "@cf/mistralai/mistral-small-3.1-24b-instruct": {
+      name: "Mistral Small 3.1 24B (Workers AI)", contextWindow: 128000, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+    },
+    "@cf/nvidia/nemotron-3-120b-a12b": {
+      name: "Nemotron 120B (Workers AI)", contextWindow: 256000, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+    },
+    "@cf/ibm-granite/granite-4.0-h-micro": {
+      name: "Granite 4.0 Micro (Workers AI)", contextWindow: 131000, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+    },
+    "@cf/openai/gpt-oss-120b": {
+      name: "GPT OSS 120B (Workers AI)", contextWindow: 128000, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+    },
+    "@cf/openai/gpt-oss-20b": {
+      name: "GPT OSS 20B (Workers AI)", contextWindow: 128000, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+    },
+    "@cf/aisingapore/gemma-sea-lion-v4-27b-it": {
+      name: "Gemma SEA-Lion 27B (Workers AI)", contextWindow: 128000, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
     },
   },
   "anthropic": {
