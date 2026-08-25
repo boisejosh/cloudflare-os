@@ -16,6 +16,10 @@
       "new_sqlite_classes": ["UserAccount", "GitHubGatekeeperImpl"]
     }
   ],
+  "vars": {
+    "BASE_URL": "https://os.crosby.family/gatekeeper/github"
+  },
+
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1,
