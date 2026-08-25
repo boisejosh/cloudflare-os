@@ -4,7 +4,8 @@
   "kvAvatarsId": "5b137ad4fd2f4695a6a9f8ef0e0bb15f",
   "r2BlueprintContent": "josh-os-blueprint-content",
   "admins": [
-    "jcrosby@cloudflare.com"
+    "jcrosby@cloudflare.com",
+    "joshcrosby@gmail.com"
   ],
   "backendExtraVars": {
     "CF_ACCESS_AUD": "83ed0f3c09992900016ba2c0e8985147e917119d8ddd826d1766ae6147b4f719",
@@ -12,7 +13,9 @@
     "CF_AI_GATEWAY": "josh-os-ai",
     "CF_AI_GATEWAY_ACCOUNT_ID": "10277681902416e39a82b1a14b2cd3cb",
     "CF_AI_GATEWAY_PROVIDERS": "cloudflare",
-    "DEPLOY_URL": "https://os.cloudflare.app/deploy/?instance=8631917d-e3f4-4d26-9542-be3920a131f0"
+    "DEPLOY_URL": "https://os.cloudflare.app/deploy/?instance=8631917d-e3f4-4d26-9542-be3920a131f0",
+    "CF_AI_GATEWAY_USE_BINDING": "true",
+    "DISABLE_PASSWORD_AUTH": "true"
   },
   "gatekeeperNameOverrides": {
     "gatekeeper-context": "josh-os-gk-context",
