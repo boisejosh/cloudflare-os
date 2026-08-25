@@ -5,9 +5,9 @@
   "main": "./src/google.ts",
   "scripts": {
     "dev": "echo \"run 'pnpm dev-server' in the root directory instead\" >&2 && exit 1",
-    "deploy": "node ../../scripts/build-gatekeeper-configurator.mjs . && wrangler deploy",
-    "build": "node ../../scripts/build-gatekeeper-configurator.mjs . && tsc",
-    "clean": "rm -rf dist src/generated"
+    "deploy": "vp run --no-cache build:configurator && wrangler deploy",
+    "clean": "rm -rf dist src/generated",
+    "test:run": "vitest run"
   },
   "dependencies": {
     "@gadgets/backend-utils": "workspace:*",
@@ -20,6 +20,7 @@
   },
   "devDependencies": {
     "typescript": "catalog:",
+    "vitest": "catalog:",
     "wrangler": "catalog:"
   }
 }

@@ -54,6 +54,10 @@ export type AdminConfig = {
    * the deployment offers.
    */
   formats: FormatCuration[];
+  /**
+   * Allowlist of model IDs available to all users. Empty array = all models available.
+   */
+  allowedModels: string[];
 };
 
 /**
@@ -91,6 +95,7 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
   disabledGatekeepers: [],
   ambientGatekeeperModes: {},
   formats: [],
+  allowedModels: [],
 };
 
 /**
@@ -313,6 +318,7 @@ export function parseAdminConfig(raw: string | null): AdminConfig {
       disabledGatekeepers: strings(p.disabledGatekeepers).map(v => v.toLowerCase()),
       ambientGatekeeperModes,
       formats: parseFormats(p.formats),
+      allowedModels: strings(p.allowedModels),
     };
   } catch {
     return { ...DEFAULT_ADMIN_CONFIG };

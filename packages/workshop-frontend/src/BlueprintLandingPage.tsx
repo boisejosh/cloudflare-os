@@ -21,6 +21,7 @@ import { WorkshopButton, WorkshopIconButton } from './components/WorkshopControl
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER } from './components/menuStyles'
 import { useDocumentTitle } from './useDocumentTitle'
 import { AccountsSubscriberAdapter } from './accountsSubscriber'
+import { useDialogSelectPortalContainer } from './useDialogSelectPortalContainer'
 
 interface Props {
   rpcStub: RpcStub<PublicApi>
@@ -65,7 +66,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
   // Per-binding URL collector functions exposed by each gatekeeper configurator iframe. We call
   // these at submit time to capture the chosen resource URL.
   const collectorsRef = useRef<Map<string, () => Promise<string>>>(new Map())
-  const selectPortalRef = useRef<HTMLDivElement>(null)
+  const selectPortalContainer = useDialogSelectPortalContainer()
   const [canManageFeatured, setCanManageFeatured] = useState(false)
   const [isFeatured, setIsFeatured] = useState(false)
   const [updatingFeatured, setUpdatingFeatured] = useState(false)
@@ -1004,7 +1005,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
       >
         <Dialog
           // The configurator iframe measures getBoundingClientRect(), which includes transforms.
-          className="!z-[1000] !top-[clamp(28px,10vh,96px)] !flex !max-h-[calc((100vh_-_clamp(28px,10vh,96px)_-_28px)_*_0.9)] !w-[min(760px,calc(100vw-32px))] !-translate-y-0 data-ending-style:!scale-100 data-starting-style:!scale-100 flex-col overflow-hidden bg-kumo-base p-0"
+          className="responsive-dialog !z-[1000] !top-[clamp(28px,10vh,96px)] !flex !max-h-[calc((100vh_-_clamp(28px,10vh,96px)_-_28px)_*_0.9)] !w-[min(760px,calc(100vw-32px))] !-translate-y-0 data-ending-style:!scale-100 data-starting-style:!scale-100 flex-col overflow-hidden bg-kumo-base p-0"
           size="lg"
         >
           {activeBinding && activeBindingName && authenticatedApi && (
@@ -1045,7 +1046,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
                   onReconnectAccount={handleReconnectAccount}
                   onReadyChange={(ready) => handleGatekeeperReadyChange(activeBindingName, ready)}
                   onCollectorChange={(collect) => handleCollectorChange(activeBindingName, collect)}
-                  selectPortalContainer={selectPortalRef}
+                  selectPortalContainer={selectPortalContainer}
                 />
               </div>
 
@@ -1064,10 +1065,6 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
             </>
           )}
         </Dialog>
-        <div
-          ref={selectPortalRef}
-          className="pointer-events-none fixed inset-0 z-[1100] [&>*]:pointer-events-auto"
-        />
       </Dialog.Root>
 
       {/* Delete blueprint confirmation dialog */}
@@ -1076,7 +1073,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
         open={showDeleteConfirm}
         onOpenChange={(open) => { if (!open) setShowDeleteConfirm(false) }}
       >
-        <Dialog className="p-8" size="sm">
+        <Dialog className="responsive-dialog overflow-y-auto p-8" size="sm">
           <Dialog.Title className="text-lg font-semibold">
             Delete blueprint
           </Dialog.Title>
@@ -1135,7 +1132,7 @@ function BlueprintScreenshotHero({
         )}
       />
       <Dialog
-        className="!z-[1200] !w-[min(1120px,calc(100vw-32px))] overflow-hidden bg-kumo-base p-0"
+        className="responsive-dialog !z-[1200] !w-[min(1120px,calc(100vw-32px))] overflow-hidden bg-kumo-base p-0"
         size="lg"
       >
         <Dialog.Title className="sr-only">Screenshot of {title}</Dialog.Title>
@@ -1154,7 +1151,7 @@ function BlueprintScreenshotHero({
           <img
             src={screenshotUrl}
             alt={`Screenshot of ${title}`}
-            className="max-h-[calc(100vh-96px)] w-full rounded-xl object-contain"
+            className="max-h-[calc(var(--app-height)-96px)] w-full rounded-xl object-contain"
           />
         </div>
       </Dialog>
@@ -1362,7 +1359,7 @@ function BindingField({
   onReconnectAccount: (accountId: number) => void
   onReadyChange: (ready: boolean) => void
   onCollectorChange: (collect: (() => Promise<string>) | null) => void
-  selectPortalContainer?: { current: HTMLElement | null }
+  selectPortalContainer?: HTMLElement | null
 }) {
   const title = binding.title || name
 

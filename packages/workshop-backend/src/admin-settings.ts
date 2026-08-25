@@ -319,6 +319,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
       accentColor: config.accentColor,
       resourceVendors: await this.#listResourceConfig(config, adminUserId),
       formats: await this.#listFormatConfig(config),
+      allowedModels: config.allowedModels,
     };
   }
 
@@ -419,6 +420,11 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
 
   async setFormatOrder(blueprintIds: string[]): Promise<void> {
     await this.#mutateFormats(formats => reorderFormats(formats, blueprintIds));
+  }
+
+  async setAllowedModels(models: string[]): Promise<void> {
+    const allowedModels = [...new Set(models.map(m => m.trim().toLowerCase()).filter(Boolean))];
+    await this.#mutateAdminConfig(config => ({ ...config, allowedModels }));
   }
 
   /** Enable/disable a single gatekeeper resource type atomically (read-modify-write within the DO). */
@@ -654,5 +660,9 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
 
   setFormatOrder(blueprintIds: string[]): Promise<void> {
     return this.admin.setFormatOrder(blueprintIds);
+  }
+
+  setAllowedModels(models: string[]): Promise<void> {
+    return this.admin.setAllowedModels(models);
   }
 }

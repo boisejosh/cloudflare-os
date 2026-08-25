@@ -3,12 +3,13 @@ import { RpcStub } from 'capnweb'
 import { Switch, Textarea, Input, Button, Tabs, useKumoToastManager } from '@cloudflare/kumo'
 import { Hexagon, ShieldWarning, UserPlus } from '@phosphor-icons/react'
 import { useAuthenticatedApi } from './AuthContext'
-import { AdminApi, AdminFormat, AdminResourceVendor, AmbientGatekeeperMode, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_ANNOUNCEMENT_LENGTH, MAX_SITE_NAME_LENGTH, DEFAULT_SITE_NAME, BannerColor, BANNER_COLORS, DEFAULT_BANNER_COLOR } from '@gadgets/workshop-shared/api'
+import { AdminApi, AdminFormat, AdminResourceVendor, AmbientGatekeeperMode, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_ANNOUNCEMENT_LENGTH, MAX_SITE_NAME_LENGTH, DEFAULT_SITE_NAME, BannerColor, BANNER_COLORS, DEFAULT_BANNER_COLOR, SUGGESTED_MODELS, AiModelProvider } from '@gadgets/workshop-shared/api'
 import { applyAccentColor, DEFAULT_ACCENT_COLOR } from './theme'
 import { cacheBustSiteLogoUrl, prepareSiteLogo } from './siteLogoUtils'
 import SiteLogo from './components/SiteLogo'
 import { useDocumentTitle } from './useDocumentTitle'
 import AdminFormatsPanel from './components/format/AdminFormatsPanel'
+import { useServerConfig } from './ServerConfigContext'
 
 // Preset accent colors offered in the Theme section ('' = default brand).
 const ACCENT_PRESETS: { label: string; value: string }[] = [
@@ -32,6 +33,7 @@ const BANNER_SWATCH: Record<BannerColor, string> = {
 
 export default function AdminPage() {
   const { authenticatedApi, isAdmin } = useAuthenticatedApi()
+  const serverConfig = useServerConfig()
   const toasts = useKumoToastManager()
   useDocumentTitle('Admin')
 
@@ -84,6 +86,7 @@ export default function AdminPage() {
 
   // Promoted output formats, in menu order (see AdminFormatsPanel).
   const [formats, setFormats] = useState<AdminFormat[]>([])
+  const [allowedModels, setAllowedModels] = useState<string[]>([])
 
   const resourceKey = (vendorId: string, urlPattern: string) => `${vendorId}\u0000${urlPattern}`
 
@@ -104,6 +107,7 @@ export default function AdminPage() {
     setSavedAccent(view.accentColor)
     setAccentDraft(view.accentColor)
     setFormats(view.formats)
+    setAllowedModels(view.allowedModels ?? [])
   }
 
   // Mint the admin capability once (the access check happens server-side) and load settings.
@@ -403,11 +407,59 @@ export default function AdminPage() {
           { value: 'general', label: 'General' },
           { value: 'gatekeepers', label: 'Gatekeepers' },
           { value: 'formats', label: 'Formats' },
+          { value: 'models', label: 'Models' },
           { value: 'access', label: 'Access' },
         ]}
       />
 
       {/* Standard output formats */}
+      {activeTab === 'models' && admin && (
+        <div className="space-y-4 mt-4">
+          <div>
+            <h2 className="text-lg font-semibold mb-1">Allowed Models</h2>
+            <p className="text-sm text-kumo-muted mb-4">
+              Restrict which AI models users can select. Unchecked models are hidden from the
+              model picker. If no models are restricted, users may pick any supported model.
+            </p>
+          </div>
+          {(Object.keys(SUGGESTED_MODELS) as AiModelProvider[]).map(provider => (
+            <div key={provider} className="rounded-lg border border-kumo-border p-4 space-y-2">
+              <h3 className="text-sm font-semibold capitalize">{provider}</h3>
+              {Object.entries(SUGGESTED_MODELS[provider]).map(([modelId, model]) => {
+                const isAllowed = allowedModels.length === 0 || allowedModels.includes(modelId)
+                return (
+                  <label key={modelId} className="flex items-center gap-2 text-sm cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={isAllowed}
+                      onChange={async (e) => {
+                        const allIds = (Object.keys(SUGGESTED_MODELS) as AiModelProvider[])
+                          .flatMap(p => Object.keys(SUGGESTED_MODELS[p]))
+                        let next: string[]
+                        if (allowedModels.length === 0) {
+                          // First restriction — build full list minus this one (if unchecking)
+                          next = e.target.checked ? [] : allIds.filter(id => id !== modelId)
+                        } else {
+                          next = e.target.checked
+                            ? [...allowedModels, modelId]
+                            : allowedModels.filter(id => id !== modelId)
+                          // Clear restriction if all models are now selected
+                          if (next.length >= allIds.length) next = []
+                        }
+                        setAllowedModels(next)
+                        await admin.api.setAllowedModels(next)
+                      }}
+                    />
+                    <span>{(model as { name: string }).name}</span>
+                    <span className="text-kumo-muted text-xs font-mono">{modelId}</span>
+                  </label>
+                )
+              })}
+            </div>
+          ))}
+        </div>
+      )}
+
       {activeTab === 'formats' && admin && (
         <AdminFormatsPanel
           admin={admin.api}
