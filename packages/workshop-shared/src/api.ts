@@ -1216,6 +1216,10 @@ export const SUGGESTED_MODELS: Record<
       name: "DeepSeek V4 Flash (Workers AI)", contextWindow: 1310720, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
     },
     // Qwen
+    // Qwen 2.5 Coder has a 32768 total context so we cap output well below it
+    "@cf/qwen/qwen2.5-coder-32b-instruct": {
+      name: "Qwen 2.5 Coder 32B (Workers AI)", contextWindow: 28672, outputLimit: 4096,
+    },
     "@cf/qwen/qwen3-30b-a3b-fp8": {
       name: "Qwen3 30B (Workers AI)", contextWindow: 32768, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
     },
