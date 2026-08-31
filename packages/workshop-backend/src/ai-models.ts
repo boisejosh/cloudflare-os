@@ -35,6 +35,8 @@ import { bridgePdfAttachments } from "./chat-attachment-pdf.js";
 type GatewayMetadata = {
   // Stable Gadgets user identifier for attribution.
   user: string;
+  // AI Gateway Users Insights key (must be named "userId" for the dashboard to recognise it).
+  userId?: string;
   // Gadgets execution context, present when the call is associated with a gadget operation.
   source?: GatewayMetadataContext["source"];
   gadgetId?: string;
@@ -104,7 +106,7 @@ export type ModelHandle = {
 };
 
 function buildMetadata(initiator: AiChatAuthorInfo, context?: GatewayMetadataContext): GatewayMetadata {
-  const metadata: GatewayMetadata = { user: initiator.id };
+  const metadata: GatewayMetadata = { user: initiator.id, userId: initiator.id };
   if (context) {
     metadata.source = context.source;
     if (context.gadgetId) metadata.gadgetId = context.gadgetId;
