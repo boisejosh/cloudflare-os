@@ -115,6 +115,11 @@ console.log("\n=== Step 4: Gatekeepers ===");
 for (const { pkg, workerName } of gkBindings) {
   const dir = pkgDir(pkg);
   console.log(`\n  → ${pkg} (${workerName})`);
+  // Some gatekeepers need their configurator UI built first (generates src/generated/app.txt)
+  const { existsSync: _existsSync } = require('node:fs');
+  if (_existsSync(join(pkgDir(pkg), 'src/configurator'))) {
+    run(pkg + ':configurator', 'node', ['../../scripts/build-gatekeeper-configurator.mjs', '.'], dir);
+  }
   run(pkg, "pnpm", ["exec", "capnweb-validate", "build", "--out", ".wrangler/validate"], dir);
   const cfg = readWrangler(pkg);
   cfg.name = workerName;
