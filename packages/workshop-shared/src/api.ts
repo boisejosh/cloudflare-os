@@ -1203,10 +1203,10 @@ export const SUGGESTED_MODELS: Record<
   "cloudflare": {
     // Meta Llama
     "@cf/meta/llama-4-scout-17b-16e-instruct": {
-      name: "Llama 4 Scout 17B (Workers AI)", contextWindow: 131000, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+      name: "Llama 4 Scout 17B (Workers AI)", contextWindow: 131000, outputLimit: 16384,
     },
     "@cf/meta/llama-3.3-70b-instruct-fp8-fast": {
-      name: "Llama 3.3 70B Fast (Workers AI)", contextWindow: 24000, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+      name: "Llama 3.3 70B Fast (Workers AI)", contextWindow: 24000, outputLimit: 8192,
     },
     // DeepSeek
     "@cf/deepseek-ai/deepseek-v4-pro-0813": {
@@ -1221,10 +1221,10 @@ export const SUGGESTED_MODELS: Record<
       name: "Qwen 2.5 Coder 32B (Workers AI)", contextWindow: 28672, outputLimit: 4096,
     },
     "@cf/qwen/qwen3-30b-a3b-fp8": {
-      name: "Qwen3 30B (Workers AI)", contextWindow: 32768, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+      name: "Qwen3 30B (Workers AI)", contextWindow: 28672, outputLimit: 4096,
     },
     "@cf/qwen/qwen3.8-27b": {
-      name: "Qwen3.8 27B (Workers AI)", contextWindow: 32768, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+      name: "Qwen3.8 27B (Workers AI)", contextWindow: 28672, outputLimit: 4096,
     },
     // Moonshot / GLM
     "@cf/moonshotai/kimi-k2.7-code": {
@@ -1241,7 +1241,7 @@ export const SUGGESTED_MODELS: Record<
     },
     // Google / Mistral / Nvidia / IBM / OpenAI OSS
     "@cf/google/gemma-4-26b-a4b-it": {
-      name: "Gemma 4 26B (Workers AI)", contextWindow: 256000, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+      name: "Gemma 4 26B (Workers AI)", contextWindow: 256000, outputLimit: 16384,
     },
     "@cf/mistralai/mistral-small-3.1-24b-instruct": {
       name: "Mistral Small 3.1 24B (Workers AI)", contextWindow: 128000, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
@@ -1253,10 +1253,10 @@ export const SUGGESTED_MODELS: Record<
       name: "Granite 4.0 Micro (Workers AI)", contextWindow: 131000, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
     },
     "@cf/openai/gpt-oss-120b": {
-      name: "GPT OSS 120B (Workers AI)", contextWindow: 128000, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+      name: "GPT OSS 120B (Workers AI)", contextWindow: 128000, outputLimit: 16384,
     },
     "@cf/openai/gpt-oss-20b": {
-      name: "GPT OSS 20B (Workers AI)", contextWindow: 128000, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+      name: "GPT OSS 20B (Workers AI)", contextWindow: 128000, outputLimit: 16384,
     },
   },
   "anthropic": {
