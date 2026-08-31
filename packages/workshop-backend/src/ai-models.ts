@@ -161,6 +161,9 @@ function workersAiCompat(catalog: Model<Api> | undefined): OpenAICompletionsComp
     supportsStore: false,
     supportsDeveloperRole: false,
     supportsLongCacheRetention: false,
+    // Workers AI's OAI-compat endpoint requires assistant content to be '' not null,
+    // and inserts a synthetic bridge message when tool results are followed by user turns.
+    requiresAssistantAfterToolResult: true,
     ...(catalog?.compat as OpenAICompletionsCompat | undefined),
     sendSessionAffinityHeaders: true,
   };
