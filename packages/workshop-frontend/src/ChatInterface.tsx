@@ -2710,9 +2710,22 @@ function ChatInterface({
   const serverConfig = useServerConfig();
   const allowedModelsRef = useRef<string[]>([]);
   allowedModelsRef.current = serverConfig?.allowedModels ?? [];
+  const allowedModels = serverConfig?.allowedModels ?? [];
+  useEffect(() => {
+    if (rawModels.length === 0) return;
+    const filtered = allowedModels.length === 0 ? rawModels : rawModels.filter(m => allowedModels.includes(m.id));
+    setAvailableModels(filtered);
+    setSelectedModel(prev => {
+      if (prev === null) return getStoredSelectedModel(filtered);
+      if (allowedModels.length > 0 && !allowedModels.includes(prev)) return getStoredSelectedModel(filtered);
+      return prev;
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rawModels, serverConfig?.allowedModels?.join(",")]);
   const [processingConnections, setProcessingConnections] = useState<Set<string>>(
     new Set(),
   );
+  const [rawModels, setRawModels] = useState<AiChatAuthorInfo[]>([]);
   const [availableModels, setAvailableModels] = useState<AiChatAuthorInfo[]>(
     [],
   );
@@ -3723,6 +3736,7 @@ function ChatInterface({
           bumpChatListVersion();
           setChatListReady(true);
 
+          setRawModels(models);
           const _allowed = allowedModelsRef.current;
           const _filteredModels = _allowed.length === 0 ? models : models.filter(m => _allowed.includes(m.id));
           setAvailableModels(_filteredModels);
