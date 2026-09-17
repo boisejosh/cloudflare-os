@@ -332,6 +332,7 @@ export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
     disabledGatekeepers: strings(p.disabledGatekeepers).map(v => v.toLowerCase()),
     ambientGatekeeperModes,
     formats: parseFormats(p.formats),
+    allowedModels: strings(p.allowedModels),
   };
 }
 
