@@ -14,6 +14,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { reportIssue } from './errorReporting'
+import { useServerConfig } from './ServerConfigContext'
 import {
   Dialog,
   DropdownMenu,
@@ -2706,6 +2707,9 @@ function ChatInterface({
   // `connectionAccept`.
   const connectionAcceptRef = useRef<typeof connectionAccept>(null);
   connectionAcceptRef.current = connectionAccept;
+  const serverConfig = useServerConfig();
+  const allowedModelsRef = useRef<string[]>([]);
+  allowedModelsRef.current = serverConfig?.allowedModels ?? [];
   const [processingConnections, setProcessingConnections] = useState<Set<string>>(
     new Set(),
   );
@@ -3719,9 +3723,11 @@ function ChatInterface({
           bumpChatListVersion();
           setChatListReady(true);
 
-          setAvailableModels(models);
+          const _allowed = allowedModelsRef.current;
+          const _filteredModels = _allowed.length === 0 ? models : models.filter(m => _allowed.includes(m.id));
+          setAvailableModels(_filteredModels);
 
-          setSelectedModel(getStoredSelectedModel(models));
+          setSelectedModel(getStoredSelectedModel(_filteredModels));
 
           forceUpdate();
         }
