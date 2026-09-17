@@ -1,0 +1,47 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "josh-os",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-02-02",
+  "services": [
+    {
+      "binding": "WORKSHOP_BACKEND",
+      "service": "josh-os-backend"
+    },
+    {
+      "binding": "GATEKEEPER_CONTEXT",
+      "service": "josh-os-gk-context"
+    },
+    {
+      "binding": "GATEKEEPER_SCHEDULER",
+      "service": "josh-os-gk-scheduler"
+    },
+    {
+      "binding": "GATEKEEPER_WORKERS_AI_IMAGE",
+      "service": "gatekeeper-workers-ai-image"
+    },
+    {
+      "binding": "GATEKEEPER_GITHUB",
+      "service": "gatekeeper-github"
+    }
+  ],
+  "assets": {
+    "directory": "../workshop-frontend/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": [
+      "/api",
+      "/api/*",
+      "/blueprint-screenshot",
+      "/blueprint-screenshot/*",
+      "/gatekeeper/*"
+    ]
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": {
+      "invocation_logs": false
+    }
+  }
+}

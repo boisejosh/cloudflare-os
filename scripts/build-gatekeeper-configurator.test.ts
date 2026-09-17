@@ -21,10 +21,16 @@ const checkboxConfiguratorSource =
   '  value: `tool-${index}`, title: `Tool ${index}`,\n' +
   '}));\n' +
   'export default {\n' +
-  '  initial: { tools: null },\n' +
-  '  render({ values, setValues }) {\n' +
-  '    return <CheckboxList name="tools" value={values.tools} loadOptions={async () => options}\n' +
-  '      onChange={tools => setValues({ tools })} />;\n' +
+  '  initial: { tools: null, failRender: false, listName: "tools" },\n' +
+  '  resourceUrl({ ui }) { return ui.resourceUrl(); },\n' +
+  '  render({ ui, values, setValues }) {\n' +
+  '    if (values.failRender) throw new Error("state-driven render failure");\n' +
+  '    return <div><button id="fail-render" onClick={() => setValues({ failRender: true })}>Fail</button>\n' +
+  '      <button id="recover-render" onClick={() => setValues({ failRender: false })}>Recover</button>\n' +
+  '      <button id="fail-options" onClick={() => setValues({ listName: "failing" })}>Fail options</button>\n' +
+  '      <CheckboxList name={values.listName} value={values.tools}\n' +
+  '        loadOptions={values.listName === "tools" ? async () => options : () => ui.failOptions()}\n' +
+  '        onChange={tools => setValues({ tools })} /></div>;\n' +
   '  },\n' +
   '};\n';
 let fixtureDir: string;
@@ -67,7 +73,10 @@ async function readRuntime(directory: string): Promise<string> {
   return decodeURIComponent(match[1]);
 }
 
-async function runConfiguratorRuntime(directory: string) {
+async function runConfiguratorRuntime(
+  directory: string,
+  waitFor: "checkbox" | "render-error" = "checkbox",
+) {
   const dom = new JSDOM("<!DOCTYPE html><div id=\"root\"></div>", {
     pretendToBeVisual: true,
     runScripts: "outside-only",
@@ -84,11 +93,25 @@ async function runConfiguratorRuntime(directory: string) {
     }
     class RpcTarget {}
     const CSS = { escape: value => String(value) };
-    function newMessagePortRpcSession() {
+    globalThis.selectionReadyEvents = [];
+    function newMessagePortRpcSession(_port, iframe) {
+      globalThis.configuratorIframe = iframe;
       return {
-        gatekeeper: {},
+        gatekeeper: {
+          resourceUrl() {
+            return new Promise(resolve => { globalThis.resolveResourceUrl = resolve; });
+          },
+          failOptions() {
+            return new Promise((_, reject) => { globalThis.rejectOptions = reject; });
+          },
+        },
         getInitialResource: async () => null,
-        setSelectionReady() {},
+        setSelectionReady(ready) {
+          globalThis.selectionReadyEvents.push({
+            ready,
+            rendered: Boolean(document.getElementById("layout-root")),
+          });
+        },
         resize() {},
         forwardScroll() {},
       };
@@ -97,7 +120,9 @@ async function runConfiguratorRuntime(directory: string) {
   `);
 
   for (let attempt = 0; attempt < 20; attempt++) {
-    if (dom.window.document.querySelector(".checkbox-rows")) return dom;
+    if (waitFor === "checkbox"
+        ? dom.window.document.querySelector(".checkbox-rows")
+        : dom.window.document.querySelector(".error")) return dom;
     await new Promise(done => setTimeout(done, 0));
   }
   const error = dom.window.document.getElementById("root")?.textContent;
@@ -389,6 +414,131 @@ describe("generated configurator checkbox behavior", () => {
   });
 });
 
+describe("generated configurator readiness", () => {
+  it("reports ready after rendering when the optional readiness predicate is absent", async () => {
+    const dom = await runConfiguratorRuntime(checkboxFixtureDir);
+    try {
+      const selectionReadyEvents = (dom.window as unknown as {
+        selectionReadyEvents: { ready: boolean; rendered: boolean }[];
+      }).selectionReadyEvents;
+      assert.equal(selectionReadyEvents.length, 1);
+      assert.equal(selectionReadyEvents[0].ready, true);
+      assert.equal(selectionReadyEvents[0].rendered, true);
+    } finally {
+      dom.window.close();
+    }
+  });
+
+  it("does not report ready when the initial render fails", async () => {
+    const dom = await runConfiguratorRuntime(fixtureDir, "render-error");
+    try {
+      const selectionReadyEvents = (dom.window as unknown as {
+        selectionReadyEvents: { ready: boolean; rendered: boolean }[];
+      }).selectionReadyEvents;
+      assert.equal(selectionReadyEvents.length, 1);
+      assert.equal(selectionReadyEvents[0].ready, false);
+    } finally {
+      dom.window.close();
+    }
+  });
+
+  it("retracts readiness and refuses collection after a state-driven render fails", async () => {
+    const dom = await runConfiguratorRuntime(checkboxFixtureDir);
+    try {
+      const failRender = dom.window.document.querySelector("#fail-render");
+      assert.ok(failRender);
+      dom.window.addEventListener("error", (event: Event) => event.preventDefault(), { once: true });
+      failRender.dispatchEvent(new dom.window.Event("click", { bubbles: true }));
+
+      const runtime = dom.window as unknown as {
+        selectionReadyEvents: { ready: boolean; rendered: boolean }[];
+        configuratorIframe: { collectResourceUrl(): Promise<string> };
+      };
+      assert.deepEqual(Array.from(runtime.selectionReadyEvents, event => event.ready), [true, false]);
+      await assert.rejects(
+        runtime.configuratorIframe.collectResourceUrl(),
+        /failed to render its current state/i,
+      );
+
+      const recoverRender = dom.window.document.querySelector("#recover-render");
+      assert.ok(recoverRender);
+      recoverRender.dispatchEvent(new dom.window.Event("click", { bubbles: true }));
+      assert.deepEqual(
+        Array.from(runtime.selectionReadyEvents, event => event.ready),
+        [true, false, true],
+      );
+    } finally {
+      dom.window.close();
+    }
+  });
+
+  it("rejects an in-flight collection when rendering fails", async () => {
+    const dom = await runConfiguratorRuntime(checkboxFixtureDir);
+    try {
+      const runtime = dom.window as unknown as {
+        configuratorIframe: { collectResourceUrl(): Promise<string> };
+        resolveResourceUrl(url: string): void;
+      };
+      const resourceUrl = runtime.configuratorIframe.collectResourceUrl();
+      const failRender = dom.window.document.querySelector("#fail-render");
+      assert.ok(failRender);
+      dom.window.addEventListener("error", (event: Event) => event.preventDefault(), { once: true });
+      failRender.dispatchEvent(new dom.window.Event("click", { bubbles: true }));
+      runtime.resolveResourceUrl("https://example.com/");
+
+      await assert.rejects(resourceUrl, /failed to render its current state/i);
+    } finally {
+      dom.window.close();
+    }
+  });
+
+  it("rejects an in-flight collection when its rendered values change", async () => {
+    const dom = await runConfiguratorRuntime(checkboxFixtureDir);
+    try {
+      const runtime = dom.window as unknown as {
+        configuratorIframe: { collectResourceUrl(): Promise<string> };
+        resolveResourceUrl(url: string): void;
+      };
+      const resourceUrl = runtime.configuratorIframe.collectResourceUrl();
+      const checkbox = dom.window.document.querySelector('input[type="checkbox"]');
+      assert.ok(checkbox);
+      checkbox.click();
+      runtime.resolveResourceUrl("https://example.com/");
+
+      await assert.rejects(resourceUrl, /changed while its resource URL was being collected/i);
+    } finally {
+      dom.window.close();
+    }
+  });
+
+  it("rejects an in-flight collection when configurator options fail", async () => {
+    const dom = await runConfiguratorRuntime(checkboxFixtureDir);
+    try {
+      const failOptions = dom.window.document.querySelector("#fail-options");
+      assert.ok(failOptions);
+      failOptions.click();
+      assert.ok(dom.window.document.querySelector('[data-name="failing"]'));
+      const runtime = dom.window as unknown as {
+        configuratorIframe: { collectResourceUrl(): Promise<string> };
+        rejectOptions(error: Error): void;
+        resolveResourceUrl(url: string): void;
+      };
+      for (let attempt = 0; attempt < 20 && !runtime.rejectOptions; attempt++) {
+        await new Promise(done => setTimeout(done, 0));
+      }
+      assert.ok(runtime.rejectOptions);
+      const resourceUrl = runtime.configuratorIframe.collectResourceUrl();
+      runtime.rejectOptions(new Error("options unavailable"));
+      await new Promise(done => setTimeout(done, 0));
+      runtime.resolveResourceUrl("https://example.com/");
+
+      await assert.rejects(resourceUrl, /options did not load/i);
+    } finally {
+      dom.window.close();
+    }
+  });
+});
+
 // The builder reads its env through `loadEnv`, and the Vite+ task that runs it has to declare each
 // variable by name: a cached `vp run` executes a task with undeclared vars stripped *and* absent
 // from the fingerprint, so an undeclared read is silently `undefined` and a changed value silently
@@ -469,10 +619,25 @@ describe("configurator builder env declarations", () => {
     // separate silently.
     const task = taskDeclaration(taskConfig, "build:configurator");
     assert.ok(task, `expected a \`build:configurator\` task in ${configPath}`);
+
+    // The task reaches the builder by bin name, so the link runs through `scripts/package.json`'s
+    // `bin` map rather than being visible in the command string. Resolve it rather than matching the
+    // name literally: that way a bin renamed on one side but not the other fails here, and so does a
+    // bin quietly re-pointed at a different script.
+    const manifest = JSON.parse(await readFile(resolve("scripts/package.json"), "utf8")) as
+      { bin: Record<string, string> };
+    const builderBins = Object.entries(manifest.bin)
+      .filter(([, target]) => resolve("scripts", target) === builder)
+      .map(([name]) => name);
+    assert.equal(
+      builderBins.length, 1,
+      `expected exactly one bin in scripts/package.json pointing at ${basename(builder)}, ` +
+        `found ${builderBins.length}`);
     assert.ok(
-      task.includes(basename(builder)),
-      `${configPath}'s \`build:configurator\` no longer runs ${basename(builder)}, so its \`env\` ` +
-        "is not what reaches the builder. Point this assertion at the task that runs it.");
+      task.includes(builderBins[0]),
+      `${configPath}'s \`build:configurator\` no longer runs ${basename(builder)} (via the ` +
+        `\`${builderBins[0]}\` bin), so its \`env\` is not what reaches the builder. Point this ` +
+        "assertion at the task that runs it.");
 
     const declared = new Set(
       [...(task.match(/env:\s*\[([^\]]*)\]/)?.[1] ?? "")
@@ -501,6 +666,10 @@ async function configuratorPackages(): Promise<string[]> {
   return names;
 }
 
+// The module specifier every configurator gatekeeper re-exports the shared tasks from. Shared by
+// the routing guard and the SKELETON.md guard below so the docs cannot drift from the requirement.
+const SHARED_CONFIGURATOR_SPECIFIER = "@gadgets/scripts/gatekeeper-configurator";
+
 /**
  * The declaration above is worth nothing to a package that never reaches the task, and
  * `env-passthrough.test.ts` cannot see that: it discovers reads per directory, and these packages
@@ -511,6 +680,24 @@ async function configuratorPackages(): Promise<string[]> {
  * `gatekeeper-slack`: a local `vp run -F <pkg> build` still looks right, which is the trap.
  */
 describe("configurator task wiring", () => {
+  it("builds Google's configurators before either supported test route", async () => {
+    const manifest = JSON.parse(await readFile(
+      "packages/gatekeeper-google/package.json", "utf8",
+    ));
+    assert.equal(
+      manifest.scripts["test:run"],
+      "vp run -F @gadgets/google-gatekeeper build:configurator && " +
+        "vitest run && vitest run -c vitest.worker.config.ts && " +
+        "vitest run -c vitest.docs-worker.config.ts",
+    );
+
+    const config = await readFile("packages/gatekeeper-google/vite.config.ts", "utf8");
+    assert.match(
+      config,
+      /test:\s*\{\s*\.\.\.vitestTask\(\[[\s\S]*?\]\),\s*dependsOn:\s*\["build:configurator"\],?\s*\}/,
+    );
+  });
+
   it("routes every package the builder builds through the shared task", async () => {
     const names = await configuratorPackages();
     assert.ok(names.length > 0, "expected to find packages with configurator UI sources");
@@ -519,12 +706,33 @@ describe("configurator task wiring", () => {
       const config =
         await readFile(join("packages", name, "vite.config.ts"), "utf8").catch(() => null);
       assert.ok(
-        config?.includes("gatekeeper-configurator-vite-config"),
+        config?.includes(SHARED_CONFIGURATOR_SPECIFIER),
         `packages/${name} has configurator UI sources but no vite.config.ts re-exporting ` +
-          "gatekeeper-configurator-vite-config, so it declares no `build:configurator` task and " +
-          "`pnpm build` would strip VITE_FRONTEND_ERROR_REPORTING from the builder. Re-export the " +
-          "shared config (or declare the task with its own `env` and widen this assertion).");
+          `${SHARED_CONFIGURATOR_SPECIFIER}, so it declares no \`build:configurator\` task ` +
+          "and `pnpm build` would strip VITE_FRONTEND_ERROR_REPORTING from the builder. Re-export " +
+          "the shared config (or declare the task with its own `env` and widen this assertion).");
     }
+  });
+
+  // Nothing reads SKELETON.md but a human copying out of it, which is how the specifier there went
+  // stale and stayed shippable: the pre-`@gadgets/scripts` relative path still resolves from a real
+  // `packages/<name>/` directory, and the `gadgets-*` bins are on PATH via the workspace root, so a
+  // generated gatekeeper would build -- on an undeclared dependency -- and then fail the routing
+  // guard above. Pinning the copy-paste blocks to the same constant is what makes that impossible.
+  it("hands out the shared task specifier the routing guard requires", async () => {
+    const skeleton = await readFile(".agents/skills/write-gatekeeper/SKELETON.md", "utf8");
+
+    assert.ok(
+      skeleton.includes(SHARED_CONFIGURATOR_SPECIFIER),
+      "SKELETON.md's vite.config.ts block must re-export " +
+        `${SHARED_CONFIGURATOR_SPECIFIER}, the specifier the routing guard looks for.`);
+    assert.doesNotMatch(
+      skeleton, /\.\.\/\.\.\/scripts\/gatekeeper-configurator-vite-config/,
+      "SKELETON.md still hands out the pre-@gadgets/scripts relative path to the shared config.");
+    assert.match(
+      skeleton, /"@gadgets\/scripts":\s*"workspace:\*"/,
+      "SKELETON.md must show @gadgets/scripts in the new package's devDependencies: its bins are " +
+        "on PATH from the workspace root, so leaving it undeclared works until it doesn't.");
   });
 
   // deploy-scripts.test.ts holds the two general deploy invariants. Both pass vacuously on a
