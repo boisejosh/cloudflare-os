@@ -31,6 +31,7 @@ export type GmailThreadInfoRaw = {
   snippet?: string;
   subject: string;
   messageCount: number;
+  latestMessageId: string;
   timestamp: Date;
   participants: EmailAddress[];
   unread: boolean;
@@ -198,24 +199,22 @@ export async function getAccessToken(
   };
 }
 
-type GoogleAccountProfile = {
+export type GoogleAccountProfile = {
+  /** The stable Google account ID; also the `{user}` in Chat's `users/{user}` names. */
   sub: string;
   email?: string;
   name?: string;
   picture?: string;
 };
 
-async function getGoogleAccountProfile(accessToken: string): Promise<GoogleAccountProfile> {
-  const response = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+export async function getGoogleAccountProfile(accessToken: string | AccessTokenProvider): Promise<GoogleAccountProfile> {
+  const response = await fetchWithAuthRetry('https://www.googleapis.com/oauth2/v3/userinfo', {
     method: 'GET',
-    headers: {
-      'Authorization': `Bearer ${accessToken}`,
-      'Accept': 'application/json',
-    },
-  });
+    headers: { 'Accept': 'application/json' },
+  }, typeof accessToken === "string" ? async () => accessToken : accessToken);
 
   if (!response.ok) {
-    response.body?.cancel();
+    await response.body?.cancel();
     throw new Error(`Failed to fetch user info: ${response.status} ${response.statusText}`);
   }
 
@@ -393,6 +392,8 @@ type GmailThreadMetadata = {
 export const MAX_GMAIL_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 /** Conservative raw-message ceiling aligned with Gmail's documented 25 MB personal limit. */
 export const MAX_GMAIL_FORWARD_SOURCE_BYTES = 25 * 1024 * 1024;
+/** Gmail's per-call limit on message IDs for `users.messages.batchModify`. */
+export const GMAIL_BATCH_MODIFY_MAX_IDS = 1000;
 const MAX_GMAIL_MESSAGE_HEADERS = 256;
 const MAX_GMAIL_MESSAGE_HEADER_BYTES = 128 * 1024;
 
@@ -664,6 +665,23 @@ function normalizeReferences(references: string): string {
   return foldReferenceTokens(parseReferenceTokens(references));
 }
 
+/**
+ * The Message-ID `buildEncodedEmail` writes for `value` in a Message-ID or In-Reply-To header.
+ * @throws When the builder would refuse the value.
+ */
+export function normalizeMessageIdHeader(value: string): string {
+  return validateMessageId(value, "Message-ID");
+}
+
+/**
+ * The message IDs `buildEncodedEmail` writes, in order, for `references` in the References
+ * header. The header joins them with spaces, folded across lines.
+ * @throws When the builder would refuse the value.
+ */
+export function normalizeReferencesHeader(references: string): string[] {
+  return parseReferenceTokens(references);
+}
+
 function foldReferences(references: string | undefined, parentId: string): string {
   let valid: string[] = [];
   if (references) {
@@ -686,7 +704,12 @@ function foldReferences(references: string | undefined, parentId: string): strin
   return foldReferenceTokens(tokens);
 }
 
-function normalizeTextBody(body: string): string {
+/**
+ * The text `buildEncodedEmail` encodes for a plain-text or HTML body: every line break (CR, LF or
+ * CRLF) becomes CRLF, as RFC 5322 requires.
+ * @throws When the body contains a NUL character.
+ */
+export function normalizeTextBody(body: string): string {
   if (body.includes('\0')) throw new Error("Email body must not contain NUL bytes.");
   return body.replace(/\r\n|\r|\n/g, '\r\n');
 }
@@ -905,7 +928,12 @@ function encodeMimeParameter(value: string): string {
     `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
 }
 
-function normalizeContentId(value: string): string {
+/**
+ * The Content-ID header value `buildEncodedEmail` writes for an attachment's `contentId`,
+ * bracketed.
+ * @throws When the builder would refuse the value.
+ */
+export function normalizeContentId(value: string): string {
   const trimmed = value.trim();
   const id = trimmed.startsWith("<") && trimmed.endsWith(">")
     ? trimmed.slice(1, -1)
@@ -1781,9 +1809,14 @@ export function summarizeGmailThread(
   const labelIds: string[] = [];
   const seenLabels = new Set<string>();
   let timestamp = 0;
+  let latestMessageId = "";
   let unread = false;
   for (const message of messages) {
-    timestamp = Math.max(timestamp, message.timestamp.getTime());
+    // Callers may pass messages in search order, so pick the newest by date; ties keep the later.
+    if (!latestMessageId || message.timestamp.getTime() >= timestamp) {
+      latestMessageId = message.id;
+      timestamp = message.timestamp.getTime();
+    }
     unread ||= message.labelIds.includes("UNREAD");
     for (const labelId of message.labelIds) {
       if (!seenLabels.has(labelId)) {
@@ -1804,6 +1837,7 @@ export function summarizeGmailThread(
     ...(snippet !== undefined ? {snippet} : {}),
     subject: messages[0]?.subject ?? "",
     messageCount: messages.length,
+    latestMessageId,
     timestamp: new Date(timestamp),
     participants,
     unread,
@@ -2666,35 +2700,27 @@ export class GmailApi {
     return await response.json() as GmailMessageRaw;
   }
 
-  async modifyMessage(
-      messageId: string, addLabelIds: string[] = [], removeLabelIds: string[] = []): Promise<void> {
-    validateGmailId(messageId, "message ID");
+  /**
+   * Add and remove labels on exactly the listed messages in one call. Gmail accepts at most
+   * {@link GMAIL_BATCH_MODIFY_MAX_IDS} IDs per call. `TRASH` may be added or removed like any
+   * other label, which is how trash and untrash are expressed.
+   */
+  async batchModifyMessages(
+      messageIds: readonly string[], addLabelIds: string[] = [],
+      removeLabelIds: string[] = []): Promise<void> {
+    if (messageIds.length === 0 || messageIds.length > GMAIL_BATCH_MODIFY_MAX_IDS) {
+      throw new Error(
+        `Gmail batchModify requires between 1 and ${GMAIL_BATCH_MODIFY_MAX_IDS} message IDs.`);
+    }
+    for (const id of messageIds) validateGmailId(id, "message ID");
     for (const id of [...addLabelIds, ...removeLabelIds]) validateGmailId(id, "label ID");
     const response = await this.authedFetch(
-      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/modify`, {
+      "https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({addLabelIds, removeLabelIds}),
+        body: JSON.stringify({ids: messageIds, addLabelIds, removeLabelIds}),
       });
-    if (!response.ok) await gmailApiFailure("messages.modify", response);
-    await response.body?.cancel();
-  }
-
-  async trashMessage(messageId: string): Promise<void> {
-    validateGmailId(messageId, "message ID");
-    const response = await this.authedFetch(
-      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/trash`, {method: "POST"});
-    if (!response.ok) await gmailApiFailure("messages.trash", response);
-    await response.body?.cancel();
-  }
-
-  /** Restore one message from trash. */
-  async untrashMessage(messageId: string): Promise<void> {
-    validateGmailId(messageId, "message ID");
-    const response = await this.authedFetch(
-      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/untrash`,
-      {method: "POST"});
-    if (!response.ok) await gmailApiFailure("messages.untrash", response);
+    if (!response.ok) await gmailApiFailure("messages.batchModify", response);
     await response.body?.cancel();
   }
 

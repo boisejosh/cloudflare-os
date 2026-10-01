@@ -30,11 +30,12 @@ const DEFAULT_CONTEXT_WINDOW = 128_000;
 export function getModelTokenLimits(config: AiModelConfig):
     {inputBudget: number, maxOutputTokens?: number} {
   let model = SUGGESTED_MODELS[config.provider][config.model];
-  let maxOutputTokens = model?.outputLimit ??
+  let maxOutputTokens = config.outputLimit ?? model?.outputLimit ??
       (config.provider === "cloudflare" ? WORKERS_AI_OUTPUT_LIMIT : undefined);
   return {
     inputBudget: model?.compactionInputBudget ??
-        (model?.contextWindow ?? DEFAULT_CONTEXT_WINDOW) - (maxOutputTokens ?? 0),
+        (config.contextWindow ?? model?.contextWindow ?? DEFAULT_CONTEXT_WINDOW) -
+            (maxOutputTokens ?? 0),
     maxOutputTokens,
   };
 }
@@ -436,10 +437,10 @@ export function buildCompactionState(
     if (message.type === "merge" && message.epochBoundary) {
       pins.clear();
       epoch = message.sequence;
-      // Worktree pins re-establish at the boundary itself, from the merge's own re-pin record
-      // (see AiChatMessageBody.worktreePins) -- there is no later "changes" declaration to
-      // re-pin them lazily, so the checkpoint must carry them or post-compaction replay would
-      // lose the worktrees' bases.
+      // Merges from before worktrees pinned on modification re-pinned every worktree at the
+      // boundary itself (see AiChatMessageBody.worktreePins) -- no later "changes" declaration
+      // re-pins those lazily, so the checkpoint must carry them or post-compaction replay would
+      // lose the worktrees' bases. Merges written now record no such pins.
       for (let pin of message.worktreePins ?? []) {
         pins.set(pin.worktreeId, {gadgetId: pin.worktreeId, baseCommit: pin.baseCommit});
       }

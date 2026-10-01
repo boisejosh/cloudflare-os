@@ -14,7 +14,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "yjs": "^13.6.32"
+    "yjs": "^13.6.33"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "catalog:",
@@ -23,7 +23,7 @@
     "esbuild": "^0.28.1",
     "jsdom": "^26.1.0",
     "typescript": "catalog:",
-    "typescript6": "npm:typescript@6.0.3",
+    "typescript6": "catalog:",
     "vitest": "catalog:"
   }
 }

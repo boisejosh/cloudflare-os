@@ -3,7 +3,6 @@ import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import {
   ApprovalQueue,
   stripTrailingSlashes,
-  type ActionDescription,
   type AccountDescription,
   type ConnectHandoff,
   type Cursor,
@@ -21,6 +20,9 @@ import {
   type SupportedResource,
   type VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
+import {
+  ActionDescriptionBuilder, buildDescription, codeSpan, type RenderedDescription,
+} from "@gadgets/gatekeeper-kit/action-description";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
 import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
 import {
@@ -319,6 +321,149 @@ type GitHubAction =
   | ReplyToDiffCommentAction
   | MergePullRequestAction
   | PushAction;
+
+// Apply replaces `#~N` in a Markdown body with the GitHub number of the issue or pull request
+// created in this workspace as `~N`. Both name the same thing, so the body shown stays the body
+// sent, but the approver is told the number will change.
+const PROVISIONAL_REFERENCE = /#~\d+/;
+
+function noteReferenceRewrite(builder: ActionDescriptionBuilder, ...bodies: (string | undefined)[]):
+    ActionDescriptionBuilder {
+  return bodies.some(body => body !== undefined && PROVISIONAL_REFERENCE.test(body))
+    ? builder.prose(
+      "References like #~N to issues or pull requests created in this workspace are replaced " +
+      "with their GitHub numbers when applied.")
+    : builder;
+}
+
+// The label set a `removeLabels` apply writes with `setLabels`: the labels staged in
+// `previousLabels` minus the removed ones, compared case-insensitively.
+function remainingLabels(action: RemoveLabelsAction): string[] {
+  return action.previousLabels.filter(
+    label => !action.labels.some(removed => removed.toLowerCase() === label.toLowerCase()));
+}
+
+/**
+ * The approver-facing text for a staged action, rendered from the payload that will be applied so
+ * every body, title, label and commit message the agent wrote is there to read in full. A push is
+ * the one action whose content (git objects) cannot be shown as text, so its description is a
+ * summary and never claims to be complete. Prose interpolates only the gatekeeper's logical ids
+ * and the bound repository; agent arguments, enums included, sit in fields or code spans.
+ */
+function describeGitHubAction(action: GitHubAction): RenderedDescription {
+  const repo = `${action.owner}/${action.repo}`;
+  switch (action.type) {
+    case "createIssue": {
+      const { options } = action;
+      return noteReferenceRewrite(buildDescription(`Create a new issue in ${repo}.`)
+        .inline("Provisional ID", action.provisionalId)
+        .inline("Title", options.title)
+        .verbatim("Body", options.bodyMarkdown ?? "", "markdown")
+        .list("Labels", options.labels ?? [])
+        .list("Assignees", options.assignees ?? []), options.bodyMarkdown)
+        .finish();
+    }
+    case "createPullRequest": {
+      const { options } = action;
+      return noteReferenceRewrite(buildDescription(
+        `Create a new ${options.draft ? "draft " : ""}pull request in ${repo}.`)
+        .inline("Provisional ID", action.provisionalId)
+        .inline("Title", options.title)
+        .inline("Head branch", options.head)
+        .inline("Base branch", options.base)
+        .verbatim("Body", options.bodyMarkdown ?? "", "markdown"), options.bodyMarkdown)
+        .finish();
+    }
+    case "setTitle":
+      return buildDescription(`Change the title of #${action.targetId}.`)
+        .inline("Current title", action.previousTitle)
+        .inline("New title", action.title)
+        .finish();
+    case "setBody":
+      return noteReferenceRewrite(
+        buildDescription(`Replace the Markdown body of #${action.targetId}.`)
+          .verbatim("New body", action.bodyMarkdown, "markdown"), action.bodyMarkdown)
+        .finish();
+    case "addLabels":
+      return buildDescription(`Add labels to #${action.targetId}.`)
+        .list("Labels", action.labels)
+        .finish();
+    case "removeLabels":
+      return buildDescription(
+        `Remove labels from #${action.targetId} by replacing its labels with the resulting set ` +
+        "below, computed from its labels when this was staged. Any label added after this was " +
+        "staged is removed too, and any other label removed since is added back.")
+        .list("Remove", action.labels)
+        .list("Resulting labels", remainingLabels(action))
+        .finish();
+    case "changeState": {
+      if (action.state !== "closed") {
+        return buildDescription(`Reopen #${action.targetId}.`).finish();
+      }
+      const builder = buildDescription(`Close #${action.targetId}.`);
+      if (action.reason) builder.inline("Reason", action.reason);
+      return builder.finish();
+    }
+    case "postComment":
+      return noteReferenceRewrite(
+        buildDescription(`Post a new Markdown comment on #${action.targetId}.`)
+          .verbatim("Comment", action.bodyMarkdown, "markdown"), action.bodyMarkdown)
+        .finish();
+    case "postReview": {
+      const { review } = action;
+      const builder = buildDescription(`Submit a review for pull request #${action.pullId}.`)
+        .inline("Decision", review.decision)
+        .inline("Reviewed head", review.revision.headSha)
+        .verbatim("Body", review.bodyMarkdown ?? "", "markdown");
+      for (const [index, comment] of (review.diffComments ?? []).entries()) {
+        const { target } = comment;
+        // Every coordinate apply sends: a multi-line range carries its own start side.
+        const where = target.subjectType === "file"
+          ? `${target.path} (whole file)`
+          : `${target.path}:${target.startLine !== undefined
+            ? `${target.startLine}${target.startSide ? ` (${target.startSide})` : ""}-`
+            : ""}${target.line} (${target.side})`;
+        builder
+          .inline(`Diff comment ${index + 1} on`, where)
+          .inline(`Diff comment ${index + 1} provisional ID`, comment.provisionalCommentId)
+          .verbatim(`Diff comment ${index + 1}`, comment.bodyMarkdown, "markdown");
+      }
+      return noteReferenceRewrite(builder, review.bodyMarkdown,
+        ...(review.diffComments ?? []).map(comment => comment.bodyMarkdown)).finish();
+    }
+    case "replyToDiffComment":
+      return noteReferenceRewrite(
+        buildDescription(`Reply to a diff discussion thread on pull request #${action.pullId}.`)
+          .inline("Thread", action.commentId)
+          .inline("Provisional ID", action.provisionalCommentId)
+          .verbatim("Reply", action.bodyMarkdown, "markdown"), action.bodyMarkdown)
+        .finish();
+    case "mergePullRequest": {
+      const options = action.options ?? {};
+      const builder = buildDescription(`Merge pull request #${action.pullId}.`);
+      if (options.method !== undefined) builder.inline("Method", options.method);
+      if (options.commitTitle !== undefined) builder.verbatim("Commit title", options.commitTitle);
+      if (options.commitMessage !== undefined) {
+        builder.verbatim("Commit message", options.commitMessage);
+      }
+      if (options.expectedHeadSha !== undefined) {
+        builder.inline("Expected head", options.expectedHeadSha);
+      }
+      return builder.finish();
+    }
+    case "push": {
+      const creating = action.expectedOldSha === ZERO_OID;
+      const description = creating
+        ? `Push commit ${codeSpan(action.newSha)} to ${repo}, ` +
+          `creating branch ${codeSpan(action.branch)}.`
+        : `Push commit ${codeSpan(action.newSha)} to branch ${codeSpan(action.branch)} of ${repo}, ` +
+          `moving the branch from its current head ${codeSpan(action.expectedOldSha)}.` +
+          (action.force ? " This is a force push: it rewrites the branch's history." : "");
+      // The commits themselves cannot be reviewed as text here, so no completeness claim.
+      return { description };
+    }
+  }
+}
 
 type StoredActionRecord = {
   action: GitHubAction;
@@ -3560,11 +3705,15 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   async submitActionForApproval(
     approvalQueue: RpcStub<ApprovalQueue>,
     action: GitHubAction,
-    description: ActionDescription,
+    presentation: { title: string; implementsRevert: boolean; pushedCommits?: string[] },
   ): Promise<void> {
     this.#stageAction(action);
     try {
-      await approvalQueue.submitAction(action.approvalId, description);
+      // The text comes from the staged payload, not the caller, so it always shows what applies.
+      await approvalQueue.submitAction(action.approvalId, {
+        ...presentation,
+        ...describeGitHubAction(action),
+      });
     } catch (error) {
       this.ctx.storage.kv.delete(this.#actionRecordKey(action.approvalId));
       this.#pendingActionsCache = undefined;
@@ -3691,12 +3840,8 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
       case "removeLabels": {
         const realId = action.targetId.startsWith("~") ? this.#resolveProvisionalId(action.targetId) : action.targetId;
         if (!realId) throw new Error(`Target ${action.targetId} has not been created on GitHub yet.`);
-        await this.#withApi(api => {
-          const remainingLabels = action.previousLabels.filter(
-            label => !action.labels.some(removed => removed.toLowerCase() === label.toLowerCase()),
-          );
-          return api.setLabels(action.owner, action.repo, Number(realId), remainingLabels);
-        });
+        await this.#withApi(api =>
+          api.setLabels(action.owner, action.repo, Number(realId), remainingLabels(action)));
         this.#markActionApproved(action);
         this.#clearCaches();
         return;
@@ -5329,43 +5474,31 @@ export class GitHubRepoSessionImpl extends RpcTarget implements GitHubRepoSessio
     const action = await this.#gatekeeper.prepareCreateIssue(options);
     await this.#gatekeeper.submitActionForApproval(this.#approvalQueue, action, {
       title: `Create issue ${options.title}`,
-      description: `Create a new issue in ${action.owner}/${action.repo} titled "${options.title}".`,
       implementsRevert: false,
     });
     return new GitHubIssueImpl(this.#gatekeeper, this.#approvalQueue.dup(), action.provisionalId, "issue");
   }
 
   async createPullRequest(options: GitHubCreatePullRequestOptions): Promise<GitHubPullRequest> {
-    // Queue-time validation reads both branches' current heads (see prepareCreatePullRequest).
-    await this.#approvalQueue.authorizeObservation({
-      title: `Read heads of branches ${options.head} and ${options.base}`,
-      description: `Read the current heads of branches "${options.head}" and "${options.base}" ` +
-        `in order to create a pull request from one into the other.`,
-    });
     const action = await this.#gatekeeper.prepareCreatePullRequest(options);
     await this.#gatekeeper.submitActionForApproval(this.#approvalQueue, action, {
       title: `Create pull request ${options.title}`,
-      description: `Create a new pull request in ${action.owner}/${action.repo} from ${options.head} into ${options.base}.`,
       implementsRevert: false,
     });
     return new GitHubPullRequestImpl(this.#gatekeeper, this.#approvalQueue.dup(), action.provisionalId);
   }
 
+  /**
+   * Opening a capability is not an observation: the caller learns only that the number exists,
+   * and the returned stub's getDetails() records the actual read.
+   */
   async getIssue(id: string): Promise<GitHubIssue> {
-    const details = await this.#gatekeeper.openIssue(id);
-    await this.#approvalQueue.authorizeObservation({
-      title: `Open issue #${details.id}: ${details.title}`,
-      description: `Open a capability for issue #${details.id} in ${details.repo.fullName}.`,
-    });
+    await this.#gatekeeper.openIssue(id);
     return new GitHubIssueImpl(this.#gatekeeper, this.#approvalQueue.dup(), id, "issue");
   }
 
   async getPullRequest(id: string): Promise<GitHubPullRequest> {
-    const details = await this.#gatekeeper.openPullRequest(id, await this.#gitCache.stub());
-    await this.#approvalQueue.authorizeObservation({
-      title: `Open pull request #${details.id}: ${details.title}`,
-      description: `Open a capability for pull request #${details.id} in ${details.repo.fullName}.`,
-    });
+    await this.#gatekeeper.openPullRequest(id, await this.#gitCache.stub());
     return new GitHubPullRequestImpl(this.#gatekeeper, this.#approvalQueue.dup(), id);
   }
 
@@ -5478,22 +5611,11 @@ export class GitHubRepoSessionImpl extends RpcTarget implements GitHubRepoSessio
         `push() requires a full 40-character commit id; got ${JSON.stringify(commitId)}. ` +
         `Use resolveRef() to resolve a truncated id.`);
     }
-    // Binding the push's expected old head reads the branch's current state.
-    await this.#approvalQueue.authorizeObservation({
-      title: `Read head of branch ${branch}`,
-      description: `Read the current head of branch "${branch}" in order to push to it.`,
-    });
     const action = await this.#gatekeeper.preparePush(
       branch, commitId, options?.force ?? false, await this.#gitCache.stub());
     if (action === null) return;  // the branch is already at commitId: nothing to do
-    const creating = action.expectedOldSha === ZERO_OID;
     await this.#gatekeeper.submitActionForApproval(this.#approvalQueue, action, {
       title: `Push ${commitId.slice(0, 12)} to ${branch}`,
-      description: creating
-        ? `Push commit ${commitId} to ${action.owner}/${action.repo}, creating branch "${branch}".`
-        : `Push commit ${commitId} to branch "${branch}" of ${action.owner}/${action.repo}, ` +
-          `moving the branch from its current head ${action.expectedOldSha}.` +
-          (action.force ? " This is a force push: it rewrites the branch's history." : ""),
       pushedCommits: [commitId],
       implementsRevert: true,
     });
@@ -5538,13 +5660,6 @@ class GitHubIssueImpl extends RpcTarget implements GitHubIssue {
     (this.approvalQueue as RpcStub<ApprovalQueue> & { [Symbol.dispose](): void })[Symbol.dispose]();
   }
 
-  protected async authorizeMutationPreparation(action: string): Promise<void> {
-    await this.approvalQueue.authorizeObservation({
-      title: `Read current state of #${this.logicalId}`,
-      description: `Read the current state of #${this.logicalId} in order to ${action} and capture revert information.`,
-    });
-  }
-
   async getDetails(): Promise<GitHubIssueDetails> {
     const details = await this.gatekeeper.openIssue(this.logicalId);
     await this.approvalQueue.authorizeObservation({
@@ -5555,61 +5670,49 @@ class GitHubIssueImpl extends RpcTarget implements GitHubIssue {
   }
 
   async setTitle(title: string): Promise<void> {
-    await this.authorizeMutationPreparation("change its title");
     const action = await this.gatekeeper.prepareSetTitle(this.kind, this.logicalId, title);
     await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
       title: `Rename #${this.logicalId}`,
-      description: `Change the title from "${action.previousTitle}" to "${title}".`,
       implementsRevert: true,
     });
   }
 
   async setBody(bodyMarkdown: string): Promise<void> {
-    await this.authorizeMutationPreparation("edit its body");
     const action = await this.gatekeeper.prepareSetBody(this.kind, this.logicalId, bodyMarkdown);
     await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
       title: `Edit body of #${this.logicalId}`,
-      description: `Replace the Markdown body of #${this.logicalId}.`,
       implementsRevert: true,
     });
   }
 
   async addLabels(labels: string[]): Promise<void> {
-    await this.authorizeMutationPreparation("add labels");
     const action = await this.gatekeeper.prepareAddLabels(this.kind, this.logicalId, labels);
     await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
       title: `Add labels to #${this.logicalId}`,
-      description: `Add labels ${labels.join(", ")} to #${this.logicalId}.`,
       implementsRevert: true,
     });
   }
 
   async removeLabels(labels: string[]): Promise<void> {
-    await this.authorizeMutationPreparation("remove labels");
     const action = await this.gatekeeper.prepareRemoveLabels(this.kind, this.logicalId, labels);
     await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
       title: `Remove labels from #${this.logicalId}`,
-      description: `Remove labels ${labels.join(", ")} from #${this.logicalId}.`,
       implementsRevert: true,
     });
   }
 
   async close(reason?: "completed" | "notPlanned"): Promise<void> {
-    await this.authorizeMutationPreparation("close it");
     const action = await this.gatekeeper.prepareChangeState(this.kind, this.logicalId, "closed", reason);
     await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
       title: `Close #${this.logicalId}`,
-      description: `Close #${this.logicalId}${reason ? ` with reason ${reason}` : ""}.`,
       implementsRevert: true,
     });
   }
 
   async reopen(): Promise<void> {
-    await this.authorizeMutationPreparation("reopen it");
     const action = await this.gatekeeper.prepareChangeState(this.kind, this.logicalId, "open");
     await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
       title: `Reopen #${this.logicalId}`,
-      description: `Reopen #${this.logicalId}.`,
       implementsRevert: true,
     });
   }
@@ -5626,7 +5729,6 @@ class GitHubIssueImpl extends RpcTarget implements GitHubIssue {
     const action = await this.gatekeeper.preparePostComment(this.kind, this.logicalId, bodyMarkdown);
     await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
       title: `Comment on #${this.logicalId}`,
-      description: `Post a new Markdown comment on #${this.logicalId}.`,
       implementsRevert: true,
     });
   }
@@ -5714,7 +5816,6 @@ export class GitHubPullRequestImpl extends GitHubIssueImpl implements GitHubPull
     const action = await this.gatekeeper.preparePostReview(this.logicalId, review);
     await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
       title: `Submit review for #${this.logicalId}`,
-      description: `Submit a ${review.decision} review for pull request #${this.logicalId}.`,
       implementsRevert: false,
     });
   }
@@ -5728,7 +5829,6 @@ export class GitHubPullRequestImpl extends GitHubIssueImpl implements GitHubPull
     const action = await this.gatekeeper.prepareReplyToDiffComment(this.logicalId, commentId, bodyMarkdown);
     await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
       title: `Reply to diff thread on #${this.logicalId}`,
-      description: `Reply to a diff discussion thread on pull request #${this.logicalId}.`,
       implementsRevert: true,
     });
   }
@@ -5737,7 +5837,6 @@ export class GitHubPullRequestImpl extends GitHubIssueImpl implements GitHubPull
     const action = await this.gatekeeper.prepareMergePullRequest(this.logicalId, options);
     await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
       title: `Merge pull request #${this.logicalId}`,
-      description: `Merge pull request #${this.logicalId}${options?.method ? ` using ${options.method}` : ""}.`,
       implementsRevert: false,
     });
   }

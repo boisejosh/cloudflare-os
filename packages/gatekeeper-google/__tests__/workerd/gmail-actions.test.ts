@@ -1,7 +1,9 @@
 import {env} from "cloudflare:workers";
 import {runInDurableObject} from "cloudflare:test";
 import {afterEach, describe, expect, it, vi} from "vitest";
-import type {ActionKind, ResourceDescription} from "@gadgets/workshop-shared/gatekeeper";
+import type {
+  ActionDescription, ActionField, ActionKind, ResourceDescription,
+} from "@gadgets/workshop-shared/gatekeeper";
 import {
   base64UrlDecodedByteLength, buildEncodedEmail, decodeBase64UrlToBytes, extractRfc822Attachments,
   GmailApi, GmailOutboundSpec, parseMimeMessage,
@@ -16,6 +18,11 @@ import type {
   GmailDraftInput, GmailDraftPatch, GmailMessageInfo, GmailReplyOptions, GmailThreadInfo,
 } from "../../src/types";
 import {containsBytes} from "../gmail-test-utils";
+
+// The field an approver reads under `label`, from a submitted description.
+function fieldOf(description: unknown, label: string): ActionField | undefined {
+  return (description as ActionDescription).fields?.find(field => field.label === label);
+}
 
 type TestHooks = {
   initialize(
@@ -294,6 +301,10 @@ class TestThread {
     const infos = await this.call("thread.messagesVisibleTo", [this.id, address]) as GmailMessageInfo[];
     return infos.map(info => new TestMessage(this.call, info.id, info));
   }
+
+  mutate(operation: string, lastMessageId?: string, label?: unknown): Promise<void> {
+    return this.call("thread.mutate", [this.id, operation, lastMessageId, label]) as Promise<void>;
+  }
 }
 
 class TestSession {
@@ -394,6 +405,10 @@ const json = (value: unknown, status = 200) =>
   new Response(JSON.stringify(value), {status, headers: {"Content-Type": "application/json"}});
 
 type FetchCall = {url: URL; init: RequestInit};
+
+async function until(condition: () => boolean): Promise<void> {
+  while (!condition()) await new Promise(resolve => setTimeout(resolve, 1));
+}
 
 function actionHarness(
     gmailFetch: (url: URL, init: RequestInit) => Response | Promise<Response>,
@@ -927,6 +942,38 @@ describe("Gmail auto-approval eligibility", () => {
     ]);
   });
 
+  it("records no observations for reads that only prepare an action", async () => {
+    const {gatekeeper} = actionHarness((url, init) => {
+      if (url.pathname === "/gmail/v1/users/me/messages/abc123" && !init.method) {
+        return json(messageMetadata("abc123", "def456"));
+      }
+      if (url.pathname === "/gmail/v1/users/me/labels" && !init.method) {
+        return json({labels: []});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+
+    const draft = await session.createDraft({
+      to: ["to@example.com"], subject: "Subject", text: "Body",
+    });
+    await draft.update({subject: "Updated subject"});
+    await draft.delete();
+    await (await session.getMessage("abc123")).archive();
+    const label = await session.createLabel("Agent label");
+    const renamed = await session.renameLabel(label, "Renamed agent label");
+    await session.deleteLabel(renamed);
+
+    const {observations, submissions} = await queue.read!();
+    expect(submissions).toHaveLength(7);
+    // The only read that returns data is the harness's createDraft(), which returns the draft's
+    // metadata. Reopening a draft or message by its opaque ID is not an observation.
+    expect((observations as Array<{title: string}>).map(({title}) => title)).toEqual([
+      "Read Gmail draft: Subject",
+    ]);
+  });
+
   it.each([
     ["applyLabel", "TRASH", "trash"],
     ["removeLabel", "INBOX", "archive"],
@@ -1070,23 +1117,84 @@ describe("Gmail forward action snapshots", () => {
     const body = `${"x".repeat(64 * 1024 - 16)}complete-marker`;
     await session.send(["to@example.com"], "Subject", body);
 
-    const description = (await queue.read!()).submissions[0]?.description as {description: string};
-    expect(description).toBeDefined();
-    expect(description.description).toContain(body);
-    expect(description.description).not.toContain("truncated");
+    const description = (await queue.read!()).submissions[0]?.description as ActionDescription;
+    expect(description.descriptionIsComplete).toBe(true);
+    expect(fieldOf(description, "Plain text")).toEqual({label: "Plain text", kind: "text", value: body});
   });
 
-  it("fails closed when rendering would exceed the approval description limit", async () => {
-    const {gatekeeper} = actionHarness(url => {
+  it("submits an oversize forward without the completeness flag", async () => {
+    // An outbound body is capped well under the description budget, but an inline forward quotes
+    // the whole source message, which is not.
+    const sourceRaw = buildEncodedEmail({
+      from: "source@example.com",
+      to: ["me@example.com"],
+      cc: [],
+      bcc: [],
+      subject: "Source subject",
+      text: "x".repeat(100 * 1024),
+      messageId: "<oversize-source@gadgets.invalid>",
+      attachments: [],
+    });
+    const {gatekeeper} = actionHarness((url, init) => {
+      if (url.pathname === "/gmail/v1/users/me/messages" && !init.method) {
+        return url.searchParams.has("q")
+          ? json({messages: []})
+          : json({messages: [{id: "source-message", threadId: "source-thread"}]});
+      }
+      if (url.pathname === "/gmail/v1/users/me/messages/source-message" && !init.method) {
+        if (url.searchParams.get("format") === "raw") {
+          return json({id: "source-message", threadId: "source-thread", internalDate: "1", raw: sourceRaw});
+        }
+        return json({
+          id: "source-message", threadId: "source-thread", internalDate: "1",
+          sizeEstimate: base64UrlDecodedByteLength(sourceRaw), labelIds: [],
+          payload: {headers: [
+            {name: "From", value: "source@example.com"},
+            {name: "To", value: "me@example.com"},
+            {name: "Subject", value: "Source subject"},
+            {name: "Message-ID", value: "<oversize-source@gadgets.invalid>"},
+          ]},
+        });
+      }
+      if (url.pathname === "/gmail/v1/users/me/labels" && !init.method) {
+        return json({labels: []});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+    const messages = await (await session.listMessages()).next();
+
+    await messages![0].message.forward(["to@example.com"], "Intro");
+    // The approver sees the truncated rendering; the missing flag tells them it is partial.
+    const {submissions} = await queue.read!();
+    expect(submissions).toHaveLength(1);
+    const description = submissions[0].description as
+      {description: string; descriptionIsComplete?: true};
+    expect(description.descriptionIsComplete).toBeUndefined();
+    const truncated = (description as ActionDescription).fields?.find(field => field.truncated);
+    expect(truncated?.truncated?.shownBytes).toBeLessThan(truncated!.truncated!.totalBytes);
+  });
+
+  it("shows a draft body with an undisplayable character exactly, as JSON", async () => {
+    const {gatekeeper, values} = actionHarness(url => {
       throw new Error(`Unexpected request: ${url}`);
     });
     const queue = approvalQueue();
     const session = await gatekeeper.startSession(queue);
 
-    await expect(session.send(
-      ["to@example.com"], "Subject", "x\n".repeat(32 * 1024),
-    )).rejects.toThrow(/exceeds.*approval description limit/i);
-    expect((await queue.read!()).submissions).toHaveLength(0);
+    // A bell character renders as nothing as text, so the body is shown escaped.
+    await session.createDraft({to: ["to@example.com"], subject: "Subject", text: "a\u0007b"});
+    const {submissions} = await queue.read!();
+    expect(submissions).toHaveLength(1);
+    const description = submissions[0].description as ActionDescription;
+    expect(description.descriptionIsComplete).toBe(true);
+    expect(fieldOf(description, "Plain text")).toEqual(
+      {label: "Plain text", kind: "json", value: '"a\\u0007b"'});
+    // The staged action and its draft are kept for the approver to decide on.
+    const keys = await values.keys();
+    expect(keys.some(key => key.startsWith("pending:action:"))).toBe(true);
+    expect(keys.some(key => key.startsWith("gmail:draft:"))).toBe(true);
   });
 
   it("sends a new forward inline with ordinary source attachments", async () => {
@@ -1192,11 +1300,144 @@ describe("Gmail forward action snapshots", () => {
 
     await draft.send();
 
-    const description = (await queue.read!()).submissions[1]?.description as {description: string};
-    expect(description.description).toContain("Intro");
-    expect(description.description).toContain("Source body");
-    expect(description.description).toContain("Source <strong>HTML</strong>");
-    expect(description.description).toContain("source.txt (text/plain)");
+    const description = (await queue.read!()).submissions[1]?.description as ActionDescription;
+    const text = fieldOf(description, "Plain text") as {value: string};
+    expect(text.value).toContain("Intro");
+    expect(text.value).toContain("Source body");
+    expect((fieldOf(description, "HTML") as {value: string}).value)
+      .toContain("Source <strong>HTML</strong>");
+    expect(description.fields).toContainEqual(expect.objectContaining(
+      {kind: "file", name: "source.txt", mediaType: "text/plain", origin: "provider"}));
+  });
+
+  it("shows every identifier a reply and a reply draft are written with", async () => {
+    const {gatekeeper} = actionHarness((url, init) => {
+      if (url.pathname === "/gmail/v1/users/me/messages/abc123" && !init.method) {
+        const metadata = messageMetadata("abc123", "def456", "<parent@example.com>");
+        return json({...metadata, payload: {headers: [
+          ...metadata.payload.headers,
+          {name: "References", value: "<root@example.com> <middle@example.com>"},
+        ]}});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+    const message = await session.getMessage("abc123");
+
+    // Overridden recipients receive the source message's identifiers all the same.
+    const replyId = await message.reply("Reply body", {to: ["other@example.com"]});
+    await message.createReplyDraft("Draft reply body");
+
+    const [reply, draft] = (await queue.read!()).submissions.map(submission =>
+      submission.description as ActionDescription);
+    const references = {
+      label: "References", kind: "list",
+      items: ["<root@example.com>", "<middle@example.com>", "<parent@example.com>"],
+    };
+    const inline = (label: string, value: string) => ({label, kind: "inline", value});
+    expect(reply?.descriptionIsComplete).toBe(true);
+    expect(reply?.fields).toEqual(expect.arrayContaining([
+      inline("Message-ID", replyId),
+      inline("In-Reply-To", "<parent@example.com>"),
+      references,
+      inline("Thread ID", "def456"),
+    ]));
+    expect(draft?.descriptionIsComplete).toBe(true);
+    expect((fieldOf(draft, "Message-ID") as {value: string}).value)
+      .toMatch(/^<[^<>\s]+@gadgets\.invalid>$/);
+    expect((fieldOf(draft, "Date") as {value: string}).value).toMatch(/ GMT$/);
+    expect(draft?.fields).toEqual(expect.arrayContaining([
+      inline("In-Reply-To", "<parent@example.com>"),
+      references,
+      inline("Thread ID", "def456"),
+    ]));
+  });
+
+  it("shows each forwarded attachment's disposition and Content-ID", async () => {
+    const sourceId = "abc123";
+    const sourceRaw = buildEncodedEmail({
+      from: "source@example.com",
+      to: ["me@example.com"],
+      cc: [],
+      bcc: [],
+      subject: "Source subject",
+      text: "Source body",
+      html: "<p><img src=\"cid:logo@example.com\"></p>",
+      messageId: "<source-parts@gadgets.invalid>",
+      attachments: [{
+        filename: "logo.png",
+        contentType: "image/png",
+        data: btoa("png bytes"),
+        disposition: "inline",
+        contentId: "logo@example.com",
+        description: "logo",
+      }, {
+        filename: "notes.txt",
+        contentType: "text/plain",
+        data: btoa("notes"),
+        disposition: "attachment",
+        description: "notes",
+      }],
+    });
+    const queue = approvalQueue();
+    const {gatekeeper} = actionHarness((url, init) => {
+      if (url.pathname === `/gmail/v1/users/me/messages/${sourceId}` && !init.method) {
+        if (url.searchParams.get("format") === "raw") {
+          return json({id: sourceId, threadId: "abc124", internalDate: "1", raw: sourceRaw});
+        }
+        return json({
+          ...messageMetadata(sourceId, "abc124", "<source-parts@gadgets.invalid>"),
+          sizeEstimate: base64UrlDecodedByteLength(sourceRaw),
+        });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const session = await gatekeeper.startSession(queue);
+    await (await session.getMessage(sourceId)).forward(["recipient@example.com"], "Intro");
+
+    const description = (await queue.read!()).submissions[0]?.description as ActionDescription;
+    expect(description.descriptionIsComplete).toBe(true);
+    const sha256 = expect.stringMatching(/^[0-9a-f]{64}$/);
+    const labels = description.fields?.map(field => field.label) ?? [];
+    const attachment = (name: string) => labels[description.fields!.findIndex(field =>
+      field.kind === "file" && field.name === name)]!;
+    const logo = attachment("logo.png");
+    const notes = attachment("notes.txt");
+    expect(fieldOf(description, logo)).toEqual({
+      label: logo, kind: "file", name: "logo.png", mediaType: "image/png", size: 9, sha256,
+      origin: "provider",
+    });
+    expect(fieldOf(description, `${logo} disposition`))
+      .toEqual({label: `${logo} disposition`, kind: "inline", value: "inline"});
+    expect(fieldOf(description, `${logo} Content-ID`))
+      .toEqual({label: `${logo} Content-ID`, kind: "inline", value: "<logo@example.com>"});
+    expect(fieldOf(description, notes)).toEqual({
+      label: notes, kind: "file", name: "notes.txt", mediaType: "text/plain", size: 5, sha256,
+      origin: "provider",
+    });
+    expect(fieldOf(description, `${notes} disposition`))
+      .toEqual({label: `${notes} disposition`, kind: "inline", value: "attachment"});
+    expect(fieldOf(description, `${notes} Content-ID`)).toBeUndefined();
+  });
+
+  it("shows a body's line breaks as the CRLF it is sent with, and stays complete", async () => {
+    const {gatekeeper} = actionHarness(url => {
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+
+    await session.send(["to@example.com"], "Subject", "line one\nline two", {
+      html: "<p>one</p>\n<p>two</p>",
+    });
+
+    const description = (await queue.read!()).submissions[0]?.description as ActionDescription;
+    expect(description.descriptionIsComplete).toBe(true);
+    expect(fieldOf(description, "Plain text"))
+      .toEqual({label: "Plain text", kind: "text", value: "line one\r\nline two"});
+    expect(fieldOf(description, "HTML")).toEqual(
+      {label: "HTML", kind: "text", value: "<p>one</p>\r\n<p>two</p>", syntax: "html"});
   });
 
   it("creates an inline forward draft from the captured source snapshot", async () => {
@@ -2559,6 +2800,7 @@ describe("Gmail message lookup", () => {
       snippet: "Latest reply",
       subject: "Project update",
       messageCount: 2,
+      latestMessageId: "1a03a1e31ecc5e71",
       timestamp: new Date(2000),
       participants: [
         {address: "alice@example.com", name: "Alice"},
@@ -2638,8 +2880,7 @@ describe("Gmail message lookup", () => {
         return json(messageMetadata(
           messageId, threadId, "<refresh@example.com>", unread ? ["UNREAD"] : []));
       }
-      if (url.pathname === `/gmail/v1/users/me/messages/${messageId}/modify` &&
-          init.method === "POST") {
+      if (url.pathname === "/gmail/v1/users/me/messages/batchModify" && init.method === "POST") {
         unread = false;
         return new Response(null, {status: 204});
       }
@@ -3003,6 +3244,8 @@ describe("Gmail message lookup", () => {
       id: threadId,
       subject: "Visible subject",
       messageCount: 1,
+      // The newer excluded message must not leak through the cutoff hint.
+      latestMessageId: messageId,
       timestamp: new Date(1000),
       participants: [
         {address: "allowed@example.com", name: "Allowed"},
@@ -3225,13 +3468,188 @@ describe("Gmail account identity", () => {
 });
 
 describe("Gmail message mutations", () => {
+  const batchModifyPath = "/gmail/v1/users/me/messages/batchModify";
+  type BatchBody = {ids: string[]; addLabelIds: string[]; removeLabelIds: string[]};
+  const batchBodies = (calls: FetchCall[]) => calls
+    .filter(call => call.url.pathname === batchModifyPath && call.init.method === "POST")
+    .map(call => JSON.parse(String(call.init.body)) as BatchBody);
+
+  // A whole-mailbox thread whose message list can grow between calls, like a live inbox.
+  function liveThreadHarness(threadMessages: string[]) {
+    const harness = actionHarness((url, init) => {
+      if (url.pathname === "/gmail/v1/users/me/threads/abc" && !init.method) {
+        if (url.searchParams.get("format") === "minimal") {
+          return json(threadMinimal("abc", threadMessages));
+        }
+        return json({id: "abc", messages: threadMessages.map((id, i) => ({
+          ...messageMetadata(id, "abc"), internalDate: String(i + 1),
+        }))});
+      }
+      if (url.pathname === "/gmail/v1/users/me/labels" && !init.method) {
+        return json({labels: [{id: "Label_1", name: "Done", type: "user"}]});
+      }
+      if (url.pathname === batchModifyPath && init.method === "POST") {
+        return new Response(null, {status: 204});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    return harness;
+  }
+
+  it("reports the newest message as latestMessageId", async () => {
+    const {gatekeeper} = liveThreadHarness(["a1", "a2", "a3"]);
+    const session = await gatekeeper.startSession(approvalQueue());
+    await expect((await session.getThread("abc")).getMetadata())
+      .resolves.toMatchObject({messageCount: 3, latestMessageId: "a3"});
+  });
+
+  it("leaves messages after lastMessageId untouched, even ones arriving before approval", async () => {
+    const threadMessages = ["a1", "a2"];
+    const {calls, gatekeeper} = liveThreadHarness(threadMessages);
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+    const thread = await session.getThread("abc");
+    const {latestMessageId} = await thread.getMetadata();
+
+    threadMessages.push("a3"); // Arrives after the user saw the thread.
+    await thread.mutate("archive", latestMessageId);
+    threadMessages.push("a4"); // Arrives while the action awaits approval.
+    await gatekeeper.applyAction(1);
+
+    expect(batchBodies(calls)).toEqual([
+      {ids: ["a1", "a2"], addLabelIds: [], removeLabelIds: ["INBOX"]},
+    ]);
+    const [submission] = (await queue.read!()).submissions;
+    expect(fieldOf(submission.description, "Message IDs")).toMatchObject({items: ["a1", "a2"]});
+    expect(calls.some(call => call.url.pathname.startsWith("/gmail/v1/users/me/threads/abc/")))
+      .toBe(false);
+  });
+
+  it("fixes the message set at submission when lastMessageId is omitted", async () => {
+    const threadMessages = ["a1", "a2"];
+    const {calls, gatekeeper} = liveThreadHarness(threadMessages);
+    const session = await gatekeeper.startSession(approvalQueue());
+
+    await (await session.getThread("abc")).mutate("markRead");
+    threadMessages.push("a3");
+    await gatekeeper.applyAction(1);
+
+    expect(batchBodies(calls)).toEqual([
+      {ids: ["a1", "a2"], addLabelIds: [], removeLabelIds: ["UNREAD"]},
+    ]);
+  });
+
+  it("applies a label through lastMessageId", async () => {
+    const {calls, gatekeeper} = liveThreadHarness(["a1", "a2", "a3"]);
+    const session = await gatekeeper.startSession(approvalQueue());
+
+    await (await session.getThread("abc")).mutate(
+      "applyLabel", "a2", {id: "Label_1", name: "Done", type: "custom"});
+    await gatekeeper.applyAction(1);
+
+    expect(batchBodies(calls)).toEqual([
+      {ids: ["a1", "a2"], addLabelIds: ["Label_1"], removeLabelIds: []},
+    ]);
+  });
+
+  it("rejects a lastMessageId that is not in the thread", async () => {
+    const {gatekeeper} = liveThreadHarness(["a1"]);
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+
+    await expect((await session.getThread("abc")).mutate("trash", "ffff"))
+      .rejects.toThrow(/lastMessageId/);
+    expect((await queue.read!()).submissions).toHaveLength(0);
+  });
+
+  it("limits a restricted thread cutoff to its admitted messages", async () => {
+    const {calls, gatekeeper} = actionHarness((url, init) => {
+      if (url.pathname === "/gmail/v1/users/me/messages" && !init.method) {
+        return json({messages: [{id: "a3", threadId: "abc"}, {id: "a1", threadId: "abc"}]});
+      }
+      if (url.pathname === "/gmail/v1/users/me/threads/abc" && !init.method) {
+        return json(threadMinimal("abc", ["a1", "a2", "a3", "a4"]));
+      }
+      if (/^\/gmail\/v1\/users\/me\/messages\/a[1-4]$/.test(url.pathname) && !init.method) {
+        const id = url.pathname.split("/").pop()!;
+        return json({...messageMetadata(id, "abc"), internalDate: id.slice(1)});
+      }
+      if (url.pathname === "/gmail/v1/users/me/labels" && !init.method) {
+        return json({labels: []});
+      }
+      if (url.pathname === batchModifyPath && init.method === "POST") {
+        return new Response(null, {status: 204});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    }, {searchQuery: "from:sender@example.com"});
+    const session = await gatekeeper.startSession(approvalQueue());
+    const thread = await session.getThread("abc");
+
+    await expect(thread.getMetadata()).resolves.toMatchObject({latestMessageId: "a3"});
+    await expect(thread.mutate("star", "a2")).rejects.toThrow(/lastMessageId/);
+    await thread.mutate("star", "a3");
+    await gatekeeper.applyAction(1);
+
+    expect(batchBodies(calls)).toEqual([
+      {ids: ["a1", "a3"], addLabelIds: ["STARRED"], removeLabelIds: []},
+    ]);
+  });
+
   it.each([
-    ["archive", "/modify", {addLabelIds: [], removeLabelIds: ["INBOX"]}],
-    ["markRead", "/modify", {addLabelIds: [], removeLabelIds: ["UNREAD"]}],
-    ["markUnread", "/modify", {addLabelIds: ["UNREAD"], removeLabelIds: []}],
-    ["star", "/modify", {addLabelIds: ["STARRED"], removeLabelIds: []}],
-    ["unstar", "/modify", {addLabelIds: [], removeLabelIds: ["STARRED"]}],
-  ] as const)("applies %s with the expected label mutation", async (operation, suffix, body) => {
+    ["archive", undefined, {addLabelIds: [], removeLabelIds: ["INBOX"]}],
+    ["trash", undefined, {addLabelIds: ["TRASH"], removeLabelIds: []}],
+    ["markRead", undefined, {addLabelIds: [], removeLabelIds: ["UNREAD"]}],
+    ["markUnread", undefined, {addLabelIds: ["UNREAD"], removeLabelIds: []}],
+    ["star", undefined, {addLabelIds: ["STARRED"], removeLabelIds: []}],
+    ["unstar", undefined, {addLabelIds: [], removeLabelIds: ["STARRED"]}],
+    ["applyLabel", "TRASH", {addLabelIds: ["TRASH"], removeLabelIds: []}],
+    ["removeLabel", "TRASH", {addLabelIds: [], removeLabelIds: ["TRASH"]}],
+  ] as const)("applies %s as one batchModify call", async (operation, labelId, body) => {
+    const {calls, gatekeeper, storage} = actionHarness((url, init) => {
+      if (url.pathname === batchModifyPath && init.method === "POST") {
+        return new Response(null, {status: 204});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    storage.kv.put("pending:action:1", {
+      type: "messageMutation",
+      operation,
+      target: {kind: "messages", messageIds: ["aaa", "bbb"]},
+      ...(labelId ? {labelId} : {}),
+    });
+
+    await gatekeeper.applyAction(1);
+
+    expect(batchBodies(calls)).toEqual([{ids: ["aaa", "bbb"], ...body}]);
+  });
+
+  it("splits more than 1000 messages across batchModify calls", async () => {
+    const {calls, gatekeeper, storage} = actionHarness((url, init) => {
+      if (url.pathname === batchModifyPath && init.method === "POST") {
+        return new Response(null, {status: 204});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const messageIds = Array.from({length: 1001}, (_, i) => `m${i}`);
+    storage.kv.put("pending:action:1", {
+      type: "messageMutation", operation: "archive", target: {kind: "messages", messageIds},
+    });
+
+    await gatekeeper.applyAction(1);
+
+    expect(batchBodies(calls).map(body => body.ids)).toEqual([
+      messageIds.slice(0, 1000), messageIds.slice(1000),
+    ]);
+  });
+
+  it.each([
+    ["archive", undefined, "/modify", {addLabelIds: [], removeLabelIds: ["INBOX"]}],
+    ["markUnread", undefined, "/modify", {addLabelIds: ["UNREAD"], removeLabelIds: []}],
+    ["trash", undefined, "/trash", undefined],
+    ["applyLabel", "TRASH", "/trash", undefined],
+    ["removeLabel", "TRASH", "/untrash", undefined],
+  ] as const)("still applies a legacy thread-wide %s action", async (
+      operation, labelId, suffix, body) => {
     const {calls, gatekeeper, storage} = actionHarness((url, init) => {
       if (url.pathname === `/gmail/v1/users/me/threads/thread${suffix}` && init.method === "POST") {
         return new Response(null, {status: 204});
@@ -3242,47 +3660,24 @@ describe("Gmail message mutations", () => {
       type: "messageMutation",
       operation,
       target: {kind: "thread", threadId: "thread"},
+      ...(labelId ? {labelId} : {}),
     });
 
     await gatekeeper.applyAction(1);
 
     const call = calls.find(item => item.url.pathname.includes("/threads/thread"));
     expect(call?.url.pathname).toBe(`/gmail/v1/users/me/threads/thread${suffix}`);
-    expect(JSON.parse(String(call?.init.body))).toEqual(body);
+    if (body) expect(JSON.parse(String(call?.init.body))).toEqual(body);
   });
 
-  it.each([
-    ["trash", "/trash"],
-    ["applyLabel", "/trash"],
-    ["removeLabel", "/untrash"],
-  ] as const)("applies %s with the expected trash endpoint", async (operation, suffix) => {
-    const {calls, gatekeeper, storage} = actionHarness((url, init) => {
-      if (url.pathname === `/gmail/v1/users/me/threads/thread${suffix}` && init.method === "POST") {
-        return new Response(null, {status: 204});
-      }
-      throw new Error(`Unexpected request: ${url}`);
-    });
-    storage.kv.put("pending:action:1", {
-      type: "messageMutation",
-      operation,
-      target: {kind: "thread", threadId: "thread"},
-      ...(operation === "applyLabel" || operation === "removeLabel" ? {labelId: "TRASH"} : {}),
-    });
-
-    await gatekeeper.applyAction(1);
-
-    expect(calls.some(item => item.url.pathname === `/gmail/v1/users/me/threads/thread${suffix}`))
-      .toBe(true);
-  });
-
-  it("keeps a partially applied multi-message mutation unrejectable until retry succeeds", async () => {
+  it("keeps a partially applied multi-chunk mutation unrejectable until retry succeeds", async () => {
     let rejectSecond = true;
     const writes: string[] = [];
     const {gatekeeper, storage, values} = actionHarness((url, init) => {
-      const match = url.pathname.match(/^\/gmail\/v1\/users\/me\/messages\/(aaa|bbb)\/modify$/);
-      if (match && init.method === "POST") {
-        writes.push(match[1]);
-        if (match[1] === "bbb" && rejectSecond) {
+      if (url.pathname === batchModifyPath && init.method === "POST") {
+        const first = (JSON.parse(String(init.body)) as BatchBody).ids[0];
+        writes.push(first);
+        if (first === "m1000" && rejectSecond) {
           rejectSecond = false;
           return json({error: "invalid mutation"}, 400);
         }
@@ -3293,24 +3688,24 @@ describe("Gmail message mutations", () => {
     storage.kv.put("pending:action:1", {
       type: "messageMutation",
       operation: "markRead",
-      target: {kind: "messages", messageIds: ["aaa", "bbb"]},
+      target: {kind: "messages", messageIds: Array.from({length: 1001}, (_, i) => `m${i}`)},
     });
 
-    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/messages\.modify failed/);
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/messages\.batchModify failed/);
 
     expect(await values.has("gmail:applying:1")).toBe(true);
     await expect(gatekeeper.rejectAction(1)).rejects.toThrow(/uncertain provider outcome/);
 
     await gatekeeper.applyAction(1);
 
-    expect(writes).toEqual(["aaa", "bbb", "aaa", "bbb"]);
+    expect(writes).toEqual(["m0", "m1000", "m0", "m1000"]);
     expect(await values.has("pending:action:1")).toBe(false);
     expect(await values.has("gmail:applying:1")).toBe(false);
   });
 
-  it("allows rejection when the first mutation target gets a definitive 400", async () => {
+  it("allows rejection when the first batchModify gets a definitive 400", async () => {
     const {gatekeeper, storage, values} = actionHarness((url, init) => {
-      if (url.pathname === "/gmail/v1/users/me/messages/aaa/modify" && init.method === "POST") {
+      if (url.pathname === batchModifyPath && init.method === "POST") {
         return json({error: "invalid mutation"}, 400);
       }
       throw new Error(`Unexpected request: ${url}`);
@@ -3321,22 +3716,26 @@ describe("Gmail message mutations", () => {
       target: {kind: "messages", messageIds: ["aaa", "bbb"]},
     });
 
-    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/messages\.modify failed/);
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/messages\.batchModify failed/);
 
     expect(await values.has("gmail:applying:1")).toBe(false);
     await expect(gatekeeper.rejectAction(1)).resolves.toBeUndefined();
     expect(await values.has("pending:action:1")).toBe(false);
   });
 
-  it("treats a missing target as terminal while reconciling a multi-message mutation", async () => {
-    const writes: string[] = [];
+  it("skips messages deleted since the first attempt while reconciling", async () => {
+    const batches: string[][] = [];
     const {gatekeeper, storage, values} = actionHarness((url, init) => {
-      const match = url.pathname.match(/^\/gmail\/v1\/users\/me\/messages\/(aaa|bbb)\/modify$/);
-      if (match && init.method === "POST") {
-        writes.push(match[1]);
-        return match[1] === "aaa"
-          ? json({error: "missing"}, 404)
-          : new Response(null, {status: 204});
+      if (url.pathname === batchModifyPath && init.method === "POST") {
+        const {ids} = JSON.parse(String(init.body)) as BatchBody;
+        batches.push(ids);
+        return ids.includes("aaa") ? json({error: "missing"}, 404) : new Response(null, {status: 204});
+      }
+      if (url.pathname === "/gmail/v1/users/me/messages/aaa" && !init.method) {
+        return json({error: "missing"}, 404);
+      }
+      if (url.pathname === "/gmail/v1/users/me/messages/bbb" && !init.method) {
+        return json(messageMetadata("bbb", "thread"));
       }
       throw new Error(`Unexpected request: ${url}`);
     });
@@ -3349,7 +3748,7 @@ describe("Gmail message mutations", () => {
 
     await gatekeeper.applyAction(1);
 
-    expect(writes).toEqual(["aaa", "bbb"]);
+    expect(batches).toEqual([["aaa", "bbb"], ["bbb"]]);
     expect(await values.has("pending:action:1")).toBe(false);
     expect(await values.has("gmail:applying:1")).toBe(false);
   });
@@ -3399,11 +3798,11 @@ describe("Gmail label action reconciliation", () => {
     ];
     const descriptions = new Map(submissions.map(submission => [
       submission.actionId,
-      submission.description as {title: string; description: string},
+      submission.description as ActionDescription,
     ]));
     expect(descriptions.get(1)?.title).toBe("Rename Gmail label: Before");
     expect(descriptions.get(2)?.title).toBe(`Rename Gmail label: ${first?.name}`);
-    expect(descriptions.get(2)?.description).toContain(first?.name);
+    expect(JSON.stringify(descriptions.get(2)?.fields)).toContain(first?.name);
 
     await gatekeeper.applyAction(1);
     await gatekeeper.applyAction(2);
@@ -3999,8 +4398,16 @@ describe("Gmail draft dependency reconciliation", () => {
     }).raw;
     let providerMessageId = before.messageId!;
     let updates = 0;
-    const {gatekeeper, storage, values} = actionHarness((url, init) => {
+    // Holds the update's own draft read open while the earlier write applies. Flags rather than
+    // promises, because workerd refuses to resume a promise resolved by another Durable Object.
+    const pause = {armed: false, reached: false, released: false};
+    const {gatekeeper, storage, values} = actionHarness(async (url, init) => {
       if (url.pathname === `/gmail/v1/users/me/drafts/${providerId}` && !init.method) {
+        if (pause.armed) {
+          pause.armed = false;
+          pause.reached = true;
+          await until(() => pause.released);
+        }
         return json({
           id: providerId,
           message: {
@@ -4032,13 +4439,13 @@ describe("Gmail draft dependency reconciliation", () => {
     const queue = approvalQueue();
     const session = await gatekeeper.startSession(queue);
     const draft = await session.getDraft(providerId);
-    await queue.pauseObservation!("Read Gmail draft before update");
+    pause.armed = true;
 
     const updateExpectation = expect(draft.update({text: "Second update"}))
-      .rejects.toThrow(/changed while this update was being prepared/);
-    await queue.waitForPausedObservation!();
+      .rejects.toThrow(/changed identity while it was being read/);
+    await until(() => pause.reached);
     await gatekeeper.applyAction(1);
-    await queue.releasePausedObservation!();
+    pause.released = true;
     await updateExpectation;
 
     expect(updates).toBe(1);

@@ -22,6 +22,7 @@ import { fileURLToPath } from "node:url";
 import { parse } from "jsonc-parser";
 import { resolveBinEntry } from "./bin-entry.ts";
 import { getDevServerConfig } from "./dev-server-config.ts";
+import { generateWorkerConfigs } from "./generate-worker-configs.ts";
 import { killProcessTree } from "./kill-process-tree.ts";
 import { pnpmCommand } from "./pnpm-command.ts";
 import type { ServiceBinding, WranglerBuild } from "./release/manifest-lib.ts";
@@ -99,6 +100,10 @@ function findGatekeepers(parentDir: string): Gatekeeper[] {
   }
 }
 
+// The committed wrangler.jsonc files are generated from cloudflare.config.ts; regenerate them so a
+// TypeScript edit reaches `pnpm dev-server` without a separate step.
+await generateWorkerConfigs({ check: false });
+
 const gatekeepers = findGatekeepers(PACKAGES_DIR);
 
 // The Context Library (packages/gatekeeper-context) is discovered by findGatekeepers and bound
@@ -163,7 +168,7 @@ function stopDevWatchers(): void {
 process.on("exit", stopDevWatchers);
 
 // Reaches each app watcher's `pnpm exec vite build --watch` grandchild, which a bare kill() on the
-// `node build-app.mjs --watch` wrapper leaves holding CPU and file watches after we are gone. Must
+// `node build-app.ts --watch` wrapper leaves holding CPU and file watches after we are gone. Must
 // not call stopDevWatchers() first: killing a wrapper reparents its children away from it, and the
 // tree walk can no longer find them.
 async function stopDevWatchersDeep(): Promise<void> {
@@ -363,18 +368,18 @@ for (const gk of gatekeepers) {
     );
   }
 
-  // Single-file app UI (Vite bundle written to src/generated/app.txt by build-app.mjs).
+  // Single-file app UI (Vite bundle written to src/generated/app.txt by build-app.ts).
   //
   // Deferred until Wrangler is listening: unlike the configurator watcher, `vite build --watch`
   // cannot skip its initial build, and these are the largest builds in the repo, so running them now
   // takes cores from the worker bundles Wrangler is building concurrently. Nothing needs them sooner
   // -- the pre-flight already wrote the `app.txt` they will produce -- and Vite reads the disk when
   // it finally starts, so an edit made while the server was coming up is still picked up.
-  if (existsSync(join(gk.dir, "build-app.mjs"))) {
+  if (existsSync(join(gk.dir, "build-app.ts"))) {
     deferredWatchers.push(() => spawnDevWatcher(
       `app UI watcher for ${gk.name}`,
       process.execPath,
-      [join(gk.dir, "build-app.mjs"), "--watch"],
+      [join(gk.dir, "build-app.ts"), "--watch"],
     ));
   }
 }
