@@ -2774,6 +2774,7 @@ function ChatInterface({
   // `connectionAccept`.
   const connectionAcceptRef = useRef<typeof connectionAccept>(null);
   connectionAcceptRef.current = connectionAccept;
+  const [rawModels, setRawModels] = useState<AiChatAuthorInfo[]>([]);
   const serverConfig = useServerConfig();
   const allowedModelsRef = useRef<string[]>([]);
   allowedModelsRef.current = serverConfig?.allowedModels ?? [];
@@ -2792,7 +2793,6 @@ function ChatInterface({
   const [processingConnections, setProcessingConnections] = useState<Set<string>>(
     new Set(),
   );
-  const [rawModels, setRawModels] = useState<AiChatAuthorInfo[]>([]);
   const [availableModels, setAvailableModels] = useState<AiChatAuthorInfo[]>(
     [],
   );
