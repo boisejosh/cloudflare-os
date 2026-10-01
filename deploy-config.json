@@ -22,7 +22,7 @@
     "gatekeeper-scheduler": "josh-os-gk-scheduler"
   },
   "authGatekeepers": "github",
-  "activeGatekeepers": "gatekeeper-context,gatekeeper-scheduler,gatekeeper-workers-ai-image,gatekeeper-github",
+  "activeGatekeepers": "gatekeeper-context,gatekeeper-scheduler,gatekeeper-workers-ai-image,gatekeeper-github,gatekeeper-web-search",
   "gatekeeperSecrets": {
     "gatekeeper-github": [
       "CLIENT_ID",

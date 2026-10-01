@@ -1,0 +1,56 @@
+// Web Search — available as WEB_SEARCH in every workspace.
+// Powered by Tavily Search API. No user credentials required.
+
+export interface SearchResult {
+  title: string;
+  url: string;
+  /** Text snippet summarising page content. */
+  content: string;
+  /** Relevance score 0–1. */
+  score: number;
+}
+
+export interface SearchResponse {
+  query: string;
+  /**
+   * AI-synthesised direct answer to the query, if available.
+   * Read this first for factual questions — it may save reading individual results.
+   */
+  answer: string | null;
+  results: SearchResult[];
+}
+
+export interface SearchOptions {
+  /** Max results 1–10. Default 5. Use 3 for quick lookups, 10 for research. */
+  maxResults?: number;
+  /** "basic" (faster) or "advanced" (richer snippets). Default "basic". */
+  searchDepth?: "basic" | "advanced";
+  /** Restrict to specific domains e.g. ["github.com", "docs.cloudflare.com"]. */
+  includeDomains?: string[];
+}
+
+/**
+ * Session for searching the internet via Tavily.
+ *
+ * USAGE — search and use results inline:
+ *
+ *   const result = await env.WEB_SEARCH.search("latest Cloudflare Workers updates");
+ *   if (result.answer) {
+ *     console.log("Answer:", result.answer);
+ *   }
+ *   result.results.forEach(r => console.log(r.title, r.url, r.content));
+ *
+ * COMBINED WITH webFetch — search then read top result in full:
+ *
+ *   const { results } = await env.WEB_SEARCH.search("Cloudflare AI Gateway docs");
+ *   // Then use webFetch tool on results[0].url to read the full page.
+ *   // (webFetch is a built-in agent tool, not an env binding.)
+ *
+ * TIPS:
+ * - Use result.answer for direct factual questions before iterating results.
+ * - Use includeDomains to restrict to authoritative sources.
+ * - Use searchDepth:"advanced" when you need full page content, not just snippets.
+ */
+export interface WebSearchSession {
+  search(query: string, options?: SearchOptions): Promise<SearchResponse>;
+}

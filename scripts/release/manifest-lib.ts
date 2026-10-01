@@ -269,6 +269,7 @@ const NO_DEFAULT_CRED_INPUTS = new Set([
   "gatekeeper-mcp",           // MCP OAuth uses dynamic client registration, not a static app
   "gatekeeper-mcp-portal",    // same MCP OAuth chain as gatekeeper-mcp
   "gatekeeper-workers-ai-image", // Workers AI binding; no third-party credentials
+  "gatekeeper-web-search",       // Tavily API key set at deploy time; no per-user OAuth
 ]);
 
 // Not installable on customer instances: Email Routing needs a zone, which workers.dev-hosted
@@ -305,6 +306,7 @@ const SINGLETON = new Set([
   "gatekeeper-mcp",           // (2) no inputs; users paste their own endpoints in-app
   "gatekeeper-mcp-portal",    // (2) no inputs; the one portal comes from the deployment's vars
   "gatekeeper-workers-ai-image", // (1) ambient ImageSession; no inputs; uses Workers AI binding
+  "gatekeeper-web-search",       // (1) ambient WebSearchSession; no inputs; uses TAVILY_API_KEY
 ]);
 
 /** Default wizard inputs for an installable gatekeeper that fronts a third-party OAuth app. */
