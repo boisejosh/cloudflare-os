@@ -84,10 +84,10 @@ type UseSurface = "getMetadata" | "subscribeToMetadata" | "subscribeToPresence" 
 const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurface>,
     (ws: RpcStub<Overseer>) => unknown> = {
   setTitle: ws => ws.setTitle("Title"),
-  setPinned: ws => ws.setPinned(true),
   deleteSelf: ws => ws.deleteSelf(),
   createGadget: ws => ws.createGadget("App"),
   listTree: ws => ws.listTree(COMMIT),
+  listChangedPaths: ws => ws.listChangedPaths(COMMIT, COMMIT),
   readFilesAtCommit: ws => ws.readFilesAtCommit(COMMIT, ["client.js"]),
   getCommitLog: ws => ws.getCommitLog(COMMIT),
   submitCodeChange: ws => ws.submitCodeChange(1, {
@@ -119,13 +119,12 @@ const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurfa
     using sink = stubFor(new ChatSink());
     return await ws.subscribeToChat(sink);
   },
+  viewChat: ws => ws.viewChat(1),
   listSlashCommands: ws => ws.listSlashCommands(),
   newChat: ws => ws.newChat("Hello", null),
   sendChatMessage: ws => ws.sendChatMessage(1, "Hello", null),
-  uploadChatAttachment: ws =>
-    ws.uploadChatAttachment({ mimeType: "text/plain", content: new Uint8Array() }, null),
+  uploadBlob: ws => ws.uploadBlob(new Uint8Array()),
   getChatAttachmentContent: ws => ws.getChatAttachmentContent(1, "attachment"),
-  deleteChatAttachment: ws => ws.deleteChatAttachment("attachment"),
   setChatTitle: ws => ws.setChatTitle(1, "Title"),
   mergeChanges: ws => ws.mergeChanges(1),
   updateChatFromMainline: ws => ws.updateChatFromMainline(1),
@@ -170,6 +169,7 @@ const deniedGadget = (chatId: number): Record<
   getBlueprintAnnotation: g => g.getBlueprintAnnotation("DATA"),
   setBlueprintAnnotation: g => g.setBlueprintAnnotation("DATA", { title: "Data", description: "" }),
   createBlueprint: g => g.createBlueprint(),
+  applyBlueprint: g => g.applyBlueprint("blueprint", { modelId: null }),
 });
 
 it("a use collaborator reaches only the mainline gadget UI", async () => {
@@ -179,7 +179,7 @@ it("a use collaborator reaches only the mainline gadget UI", async () => {
   await ownerApi.provisionAmbientAccount(TEST_VENDOR_ID);
   const account = await waitFor("the test account", async () =>
     (await listConnectedAccounts(ownerApi)).find(a => a.vendorId === TEST_VENDOR_ID) ?? null);
-  using ws = await ownerApi.newGadget();
+  using ws = await ownerApi.newWorkspace();
   const workspaceId = (await ws.getMetadata()).id;
   const workpieces = new WorkpieceRecorder();
   using workpiecesStub = stubFor(workpieces);
@@ -215,7 +215,7 @@ it("a use collaborator reaches only the mainline gadget UI", async () => {
   using viewerPublic = connect(harness.url);
   using viewerApi = await signUp(viewerPublic, viewer!);
   if (!await ws.addCollaborator(viewer!, "use")) throw new Error(`Failed to share with ${viewer}`);
-  using useWs = await viewerApi.openGadget(workspaceId);
+  using useWs = await viewerApi.openWorkspace(workspaceId);
   using useGadget = await useWs.getGadget(gadgetId);
 
   expect(await outcomes(DENIED_OVERSEER, useWs)).toEqual(allDenied(DENIED_OVERSEER));

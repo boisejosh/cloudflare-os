@@ -50,7 +50,7 @@ async function newWorkspace(usernamePrefix: string) {
   using stack = new DisposableStack();
   const api = stack.use(await signUp(stack.use(connect(harness.url)), username));
   const account = await provisionAccount(api);
-  const ws = stack.use(await api.newGadget());
+  const ws = stack.use(await api.newWorkspace());
   return Object.assign(stack.move(), { account, ws });
 }
 
@@ -81,7 +81,7 @@ async function holdSession(
   using stack = new DisposableStack();
   const api = await logIn(stack.use(connect(harness.url)), who);
   using callback = stubFor(recorder);
-  const overseer = stack.use(await api.openGadget(workspaceId, undefined, callback));
+  const overseer = stack.use(await api.openWorkspace(workspaceId, undefined, callback));
   return Object.assign(stack.move(), { overseer });
 }
 
@@ -210,7 +210,7 @@ it("enabling a hook on an unbound connection re-verifies a live use viewer and d
   const SOURCE_URL = "https://gadgets-test.example/things/hook-source";
   const watchCode = `import { restore } from "cloudflare:workers";
 export default async function(self, env) {
-  await env.SOURCE.watch(${JSON.stringify(hookKey)}, await env.HOOKED[restore]({ type: "state-hook" }));
+  await env.SOURCE.watch(${JSON.stringify(hookKey)}, await env.HOOKED.rpc[restore]({ type: "state-hook" }));
 }`;
   const model = models.script([
     {
@@ -368,7 +368,8 @@ it("mainline binding names steer clear of another chat's pending binding", async
   expect(await app.bindWithSuggestedName(mainlineTargetId)).toBe("TEST_THING_2");
 
   await app.bind("MAIN", mainlineTargetId);
-  await expect(app.renameBinding("MAIN", "TEST_THING")).rejects.toThrow();
+  await expect(app.renameBinding("MAIN", "TEST_THING"))
+      .rejects.toThrow('There is already a binding named "TEST_THING".');
 });
 
 it("a mainline bind re-verifies a held use viewer against the bound connection", async () => {
