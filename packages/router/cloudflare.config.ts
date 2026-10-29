@@ -3,7 +3,7 @@ import {
 } from "@gadgets/scripts/worker-config";
 
 export default defineGadgetsWorker({
-  name: "router",
+  name: "josh-os",
   entrypoint: "src/index.ts",
 
   // The router owns the public origin for customer instances, so it serves the frontend.
@@ -24,7 +24,7 @@ export default defineGadgetsWorker({
     // Gatekeeper service bindings (GATEKEEPER_*) are added dynamically at deploy time — by the
     // deploy service for customer instances, from the release manifest's binding templates. Only
     // the static backend binding is checked in.
-    WORKSHOP_BACKEND: bindings.worker({ worker: "workshop-backend" }),
+    WORKSHOP_BACKEND: bindings.worker({ worker: "josh-os-backend" }),
     ASSETS: bindings.assets(),
   },
 

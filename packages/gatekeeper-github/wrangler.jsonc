@@ -8,16 +8,15 @@
     "allow_irrevocable_stub_storage",
     "nodejs_als"
   ],
-  "vars": {
-    "BASE_URL": "https://os.crosby.family/gatekeeper/github"
-  },
-
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1,
     "logs": {
       "invocation_logs": false
     }
+  },
+  "vars": {
+    "BASE_URL": "https://os.crosby.family/gatekeeper/github"
   },
   "build": {
     "command": "pnpm exec capnweb-validate build --out .wrangler/validate",

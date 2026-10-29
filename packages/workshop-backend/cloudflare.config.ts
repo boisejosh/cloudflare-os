@@ -4,7 +4,7 @@ import {
 } from "@gadgets/scripts/worker-config";
 
 export default defineGadgetsWorker({
-  name: "workshop-backend",
+  name: "josh-os-backend",
   entrypoint: ".wrangler/validate/src/server.ts",
 
   // `global_fetch_strictly_public` makes the global fetch() function strictly fetch from
